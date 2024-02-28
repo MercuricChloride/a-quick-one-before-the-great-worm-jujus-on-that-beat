@@ -7,7 +7,7 @@ use std::{
 };
 
 use eframe::{
-    egui::{self, Key, Ui, Widget, Window},
+    egui::{self, ComboBox, Key, Ui, Widget, Window},
     run_native, AppCreator, NativeOptions,
 };
 use rhai::{eval, Dynamic, Engine, Scope};
@@ -80,6 +80,69 @@ impl Module {
         }
     }
 
+    pub fn inputs_mut(&mut self) -> &mut Vec<String> {
+        match self {
+            Module::Map { inputs, .. } => inputs,
+            Module::Store { inputs, .. } => inputs,
+        }
+    }
+
+    fn generate_input_code(input: &str, module_map: &HashMap<String, Module>) -> String {
+        match module_map.get(input) {
+            Some(Module::Map {
+                name,
+                code,
+                inputs,
+                editing,
+            }) => {
+                format!("#{{kind: \"map\", name: \"{name}\"}}")
+            }
+            Some(Module::Store {
+                name,
+                code,
+                inputs,
+                update_policy,
+                editing,
+            }) => {
+                format!("#{{kind: \"store\", name: \"{name}\"}}")
+            }
+            None => {
+                if input == "$BLOCK" {
+                    "#{kind: \"source\"}".to_string()
+                } else {
+                    panic!("Unknown input: {}", input)
+                }
+            }
+        }
+    }
+
+    fn register_module(&self, module_map: &HashMap<String, Module>) -> String {
+        let name = self.name();
+        let register_function = match self {
+            Module::Map { .. } => "add_mfn",
+            Module::Store { .. } => "add_sfn",
+        };
+
+        let input_code = self
+            .inputs()
+            .iter()
+            .map(|input| Self::generate_input_code(input, module_map))
+            .collect::<Vec<String>>()
+            .join(",");
+
+        let code = format!(
+            r#"
+{register_function}(#{{
+    name: "{name}",
+    inputs: [{input_code}],
+    handler: "{name}"
+}});
+"#
+        );
+
+        code
+    }
+
     fn default() -> HashMap<String, Self> {
         let mut map = HashMap::new();
         map.insert(
@@ -110,7 +173,6 @@ impl Module {
 #[derive(Serialize, Deserialize)]
 pub struct EditorState {
     template_repo_path: String,
-    source_file: String,
     #[serde(skip)]
     rhai_engine: Engine,
     #[serde(skip)]
@@ -127,8 +189,8 @@ impl Default for EditorState {
         let (engine, scope) = rhai::packages::streamline::init_package(engine, scope);
 
         Self {
-            template_repo_path: "/path/to/template/repo".to_string(),
-            source_file: "".to_string(),
+            template_repo_path: "/home/alexandergusev/streamline/streamline-template-repository/"
+                .to_string(),
             rhai_engine: engine,
             rhai_scope: scope,
             config: EditorConfig::default(),
@@ -166,6 +228,24 @@ impl EditorState {
         // If we failed to recover the state, return a default state
         Self::default()
     }
+
+    pub fn source_file(&self) -> String {
+        let modules = self.modules.lock().unwrap();
+        let mut source = String::new();
+        for module in modules.values() {
+            source.push_str(&module.register_module(&modules));
+            source.push_str(module.code());
+            source.push_str("\n");
+        }
+
+        source
+    }
+}
+
+pub fn rust_view_ui(ui: &mut egui::Ui, code: &str) {
+    let language = "rs";
+    let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx());
+    egui_extras::syntax_highlighting::code_view_ui(ui, &theme, code, language);
 }
 
 impl eframe::App for EditorState {
@@ -174,9 +254,10 @@ impl eframe::App for EditorState {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let source_file = self.source_file();
+
         let Self {
             template_repo_path,
-            source_file,
             rhai_engine,
             rhai_scope,
             config,
@@ -184,7 +265,7 @@ impl eframe::App for EditorState {
             modules,
         } = self;
 
-        let mut menu_bar = |ui: &mut Ui, source_file: &str| {
+        let menu_bar = |ui: &mut Ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Config", |ui| {
                     ui.checkbox(&mut config.show_config, "Open Config Panel");
@@ -201,14 +282,13 @@ impl eframe::App for EditorState {
                 });
             }
 
-            ui.horizontal(|ui| {
-                if ui.button("Clear Messages").clicked() {
-                    let mut messages = messages.lock().unwrap();
-                    messages.clear();
-                }
+            if config.show_full_source {
+                Window::new("Full Source").show(ctx, |ui| rust_view_ui(ui, &source_file));
+            }
 
+            ui.horizontal(|ui| {
                 if ui.button("Run in repl").clicked() {
-                    let result = rhai_engine.eval::<Dynamic>(source_file);
+                    let result = rhai_engine.eval::<Dynamic>(&source_file);
                     let mut messages = messages.lock().unwrap();
                     messages.push(format!("Result: {:?}", result));
                 }
@@ -219,8 +299,8 @@ impl eframe::App for EditorState {
                     messages.push(format!("Build result: {:?}", result));
                 }
 
-                if ui.button("Write to template repo").clicked() {
-                    let path = format!("{}/streamline_ide_output.rhai", template_repo_path);
+                if ui.button("Write to temp").clicked() {
+                    let path = "/tmp/streamline_ide_output.rhai";
                     fs::write(path, source_file).unwrap();
                 }
             })
@@ -235,39 +315,92 @@ impl eframe::App for EditorState {
                     //ui.heading("Modules");
                     //ui.separator();
                     let mut modules = modules.lock().unwrap();
+                    let module_names = modules
+                        .iter()
+                        .map(|(k, v)| v.name().to_string())
+                        .collect::<Vec<_>>();
                     for (name, module) in modules.iter_mut() {
                         // TODO Fix this lazy clone
                         ui.collapsing(name.as_str(), |ui| {
-                            ui.collapsing("Inputs", |ui| {
-                                for input in module.inputs() {
-                                    ui.label(input);
-                                }
-                            });
+                            ComboBox::from_label("Input")
+                                .selected_text("Select")
+                                .show_ui(ui, |ui| {
+                                    for input in module.inputs_mut() {
+                                        for module_name in module_names.iter() {
+                                            if &module_name == &input {
+                                                continue;
+                                            }
+                                            ui.selectable_value(
+                                                input,
+                                                module_name.to_string(),
+                                                module_name,
+                                            );
+                                        }
+                                    }
+                                });
                             ui.checkbox(module.editing_mut(), "Show Editor?");
                             if *module.editing() {
                                 Window::new(name).show(ctx, |ui| {
                                     ui.vertical(|ui| {
                                         ui.horizontal(|ui| {
-                                            if ui.button("Eval").clicked() {
+                                            if ui.button("Eval").clicked()
+                                                || ctx.input(|i| {
+                                                    i.key_pressed(Key::Enter) && i.modifiers.ctrl
+                                                })
+                                            {
                                                 let result =
                                                     rhai_engine.eval::<Dynamic>(module.code());
                                                 let mut messages = messages.lock().unwrap();
                                                 messages.push(format!("Result: {:?}", result));
                                             }
                                         });
-                                        ui.text_edit_multiline(module.code_mut());
+                                        ui.code_editor(module.code_mut());
                                     });
                                 });
                             }
                         });
                         ui.end_row();
                     }
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Add Mfn").clicked() {
+                            let name = "template_mfn";
+                            modules.insert(
+                                name.to_string(),
+                                Module::Map {
+                                    name: name.to_string(),
+                                    code: format!("fn {name}($BLOCK) {{ block.number }}"),
+                                    inputs: vec!["$BLOCK".to_string()],
+                                    editing: true,
+                                },
+                            );
+                        }
+                        if ui.button("Add SFN").clicked() {
+                            let name = "template_sfn";
+                            modules.insert(
+                                name.to_string(),
+                                Module::Store {
+                                    name: name.to_string(),
+                                    code: format!("fn {name}(test_map,s) {{ s.set(test_map); }}"),
+                                    inputs: vec!["test_map".to_string()],
+                                    update_policy: "set".to_string(),
+                                    editing: true,
+                                },
+                            );
+                        }
+                    })
                 });
         };
 
         let message_panel = |ui: &mut Ui| {
             ui.vertical(|ui| {
                 ui.heading("Messages");
+                ui.horizontal(|ui| {
+                    if ui.button("Clear Messages").clicked() {
+                        let mut messages = messages.lock().unwrap();
+                        messages.clear();
+                    }
+                });
                 ui.separator();
                 ui.vertical(|ui| {
                     let messages = messages.lock().unwrap();
@@ -277,12 +410,6 @@ impl eframe::App for EditorState {
                 });
             });
         };
-
-        if ctx.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl) {
-            let result = rhai_engine.eval_with_scope::<Dynamic>(rhai_scope, source_file);
-            let mut messages = messages.lock().unwrap();
-            messages.push(format!("Result: {:?}", result));
-        }
 
         egui::SidePanel::left("Modules")
             .max_width(250.0)
@@ -297,13 +424,7 @@ impl eframe::App for EditorState {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Hello World!");
 
-            menu_bar(ui, &source_file);
-
-            Window::new("A sample module")
-                .collapsible(true)
-                .show(ctx, |ui| {
-                    ui.text_edit_multiline(source_file);
-                });
+            menu_bar(ui);
         });
     }
 }
