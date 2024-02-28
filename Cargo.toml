@@ -9,7 +9,7 @@ serde = { version = "1.0.197", features = ["derive"] }
 rhai = { git = "https://github.com/MercuricChloride/rhai.git", features = ["dev", "no_time", "substreams_runtime"]}
 serde_json = "1.0.114"
 serde_yaml = "0.9.32"
-
+egui_extras = { version = "0.26.2", features = ["syntect"] }
 
 [features]
 dev = []

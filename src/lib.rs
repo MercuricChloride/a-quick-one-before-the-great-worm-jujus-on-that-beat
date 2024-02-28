@@ -107,7 +107,7 @@ impl Module {
                 format!("#{{kind: \"store\", name: \"{name}\"}}")
             }
             None => {
-                if input == "$BLOCK" {
+                if input == "BLOCK" {
                     "#{kind: \"source\"}".to_string()
                 } else {
                     panic!("Unknown input: {}", input)
@@ -149,8 +149,8 @@ impl Module {
             "test_map".to_string(),
             Module::Map {
                 name: "test_map".to_string(),
-                code: "fn test_map($BLOCK) { block.number }".to_string(),
-                inputs: vec!["$BLOCK".to_string()],
+                code: "fn test_map(BLOCK) { block.number }".to_string(),
+                inputs: vec!["BLOCK".to_string()],
                 editing: true,
             },
         );
@@ -158,7 +158,7 @@ impl Module {
         map.insert(
             "test_store".to_string(),
             Module::Store {
-                name: "store".to_string(),
+                name: "test_store".to_string(),
                 code: "fn test_store(test_map,s) { s.set(test_map); }".to_string(),
                 inputs: vec!["test_map".to_string()],
                 update_policy: "set".to_string(),
@@ -176,10 +176,11 @@ pub struct EditorState {
     #[serde(skip)]
     rhai_engine: Engine,
     #[serde(skip)]
-    rhai_scope: Scope<'static>,
+    rhai_scope: Mutex<Scope<'static>>,
     config: EditorConfig,
     messages: Mutex<Vec<String>>,
     modules: Mutex<HashMap<String, Module>>,
+    display_welcome_message: bool,
 }
 
 impl Default for EditorState {
@@ -192,10 +193,11 @@ impl Default for EditorState {
             template_repo_path: "/home/alexandergusev/streamline/streamline-template-repository/"
                 .to_string(),
             rhai_engine: engine,
-            rhai_scope: scope,
+            rhai_scope: scope.into(),
             config: EditorConfig::default(),
             messages: Vec::new().into(),
             modules: Module::default().into(),
+            display_welcome_message: true,
         }
     }
 }
@@ -221,7 +223,7 @@ impl EditorState {
             let (engine, scope) = rhai::packages::streamline::init_package(engine, scope);
             let mut state: Self = eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
             state.rhai_engine = engine;
-            state.rhai_scope = scope;
+            state.rhai_scope = scope.into();
             return state;
         }
 
@@ -263,6 +265,7 @@ impl eframe::App for EditorState {
             config,
             messages,
             modules,
+            display_welcome_message,
         } = self;
 
         let menu_bar = |ui: &mut Ui| {
@@ -322,10 +325,10 @@ impl eframe::App for EditorState {
                     for (name, module) in modules.iter_mut() {
                         // TODO Fix this lazy clone
                         ui.collapsing(name.as_str(), |ui| {
-                            ComboBox::from_label("Input")
-                                .selected_text("Select")
-                                .show_ui(ui, |ui| {
-                                    for input in module.inputs_mut() {
+                            for input in module.inputs_mut() {
+                                ComboBox::from_label("Input")
+                                    .selected_text(input.as_str())
+                                    .show_ui(ui, |ui| {
                                         for module_name in module_names.iter() {
                                             if &module_name == &input {
                                                 continue;
@@ -336,8 +339,9 @@ impl eframe::App for EditorState {
                                                 module_name,
                                             );
                                         }
-                                    }
-                                });
+                                        ui.selectable_value(input, "BLOCK".to_string(), "BLOCK");
+                                    });
+                            }
                             ui.checkbox(module.editing_mut(), "Show Editor?");
                             if *module.editing() {
                                 Window::new(name).show(ctx, |ui| {
@@ -353,6 +357,8 @@ impl eframe::App for EditorState {
                                                 let mut messages = messages.lock().unwrap();
                                                 messages.push(format!("Result: {:?}", result));
                                             }
+
+                                            ui.collapsing("Module Configuration", |ui| {});
                                         });
                                         ui.code_editor(module.code_mut());
                                     });
@@ -369,8 +375,8 @@ impl eframe::App for EditorState {
                                 name.to_string(),
                                 Module::Map {
                                     name: name.to_string(),
-                                    code: format!("fn {name}($BLOCK) {{ block.number }}"),
-                                    inputs: vec!["$BLOCK".to_string()],
+                                    code: format!("fn {name}(BLOCK) {{ block.number }}"),
+                                    inputs: vec!["BLOCK".to_string()],
                                     editing: true,
                                 },
                             );
@@ -398,6 +404,8 @@ impl eframe::App for EditorState {
                 ui.horizontal(|ui| {
                     if ui.button("Clear Messages").clicked() {
                         let mut messages = messages.lock().unwrap();
+                        let mut rhai_scope = rhai_scope.lock().unwrap();
+                        rhai_scope.clear();
                         messages.clear();
                     }
                 });
@@ -411,6 +419,29 @@ impl eframe::App for EditorState {
             });
         };
 
+        if *display_welcome_message {
+            egui::CentralPanel::default()
+                .show(ctx, |ui| {
+                    ui.vertical_centered_justified(|ui| {
+                        ui.set_width(500.0);
+                        ui.heading("Welcome to Streamline!");
+                        ui.separator();
+                        ui.label("Hello there and welcome to the Streamline IDE! We are so happy to have you here!");
+                        ui.separator();
+                        ui.label("This editor is an active work in progress, so please report any bugs and weird things you find.");
+                        ui.label("Additionally, if you have any features you would like to see, please let me, @blind_nabler know!");
+                        ui.separator();
+                        ui.label("K thx bye :)");
+                        ui.label("PS: I love you");
+                        ui.separator();
+                        if ui.button("Close this message").clicked() {
+                            *display_welcome_message = false;
+                        }
+                    });
+                });
+            return ();
+        }
+
         egui::SidePanel::left("Modules")
             .max_width(250.0)
             .show(ctx, |ui| {
@@ -422,8 +453,6 @@ impl eframe::App for EditorState {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Hello World!");
-
             menu_bar(ui);
         });
     }
