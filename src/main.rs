@@ -1,5 +1,3 @@
-//use rhai_egui::init_engine;
-
 use eframe::{run_native, HardwareAcceleration, NativeOptions};
 use rhai_egui::EditorState;
 

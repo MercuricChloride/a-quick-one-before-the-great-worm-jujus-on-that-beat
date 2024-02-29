@@ -116,7 +116,7 @@ pub struct EditorState {
     /// The search string for the messages
     message_search: String,
 
-    modules: Arc<RwLock<HashMap<String, Module>>>,
+    modules: HashMap<String, Module>,
 
     display_welcome_message: bool,
 
@@ -127,13 +127,9 @@ pub struct EditorState {
 
     #[serde(skip)]
     stream_sender: Option<mpsc::Sender<StreamMessages>>,
-    #[serde(skip)]
-    stream_receiver: Option<mpsc::Receiver<StreamMessages>>,
 
     #[serde(skip)]
     worker_sender: Option<mpsc::Sender<WorkerMessage>>,
-    #[serde(skip)]
-    message_receiver: Option<mpsc::Receiver<WorkerMessage>>,
 }
 
 impl EditorState {
@@ -161,13 +157,19 @@ impl EditorState {
         // Channel from: gui -> stream thread
         let (stream_send, stream_rec) = mpsc::channel();
 
-        // store the sender in the state so we can send messages to the worker thread
+        // sender to the worker thread
         state.worker_sender = Some(worker_send);
+
+        // receiver on the gui thread
         state.gui_receiver = Some(gui_rec);
+        // sender to the gui thread
         state.gui_sender = Some(gui_send.clone());
+
+        // sender to the stream thread
         state.stream_sender = Some(stream_send);
-        //state.stream_receiver = Some(stream_rec);
-        state.modules = Arc::new(RwLock::new(Module::default()));
+
+        //state.modules = Arc::new(RwLock::new(Module::default()));
+        state.modules = Module::default();
         if let Some(api_key) = api_key {
             state.substreams_api_key = api_key;
         }
@@ -177,6 +179,8 @@ impl EditorState {
             let engine = Engine::new_raw();
             let scope = Scope::new();
             let (engine, mut scope) = rhai::packages::streamline::init_package(engine, scope);
+
+            // TODO Add support to store outputs of streams to use as input data
 
             loop {
                 while let Ok(msg) = worker_rec.try_recv() {
@@ -240,6 +244,11 @@ impl EditorState {
                                     let message = "Failed to start stream".to_string();
                                     gui_sender.send(GuiMessage::PushMessage(message)).unwrap();
                                 }
+
+                                let stop_message = "Stream Completed Successfully".to_string();
+                                gui_sender
+                                    .send(GuiMessage::PushMessage(stop_message))
+                                    .unwrap();
                             }
                         }
                     }
@@ -251,7 +260,7 @@ impl EditorState {
     }
 
     pub fn source_file(&self) -> String {
-        let modules = self.modules.read().unwrap();
+        let modules = &self.modules;
         let mut source = String::new();
         for module in modules.values() {
             source.push_str(&module.register_module(&modules));
@@ -331,8 +340,8 @@ impl eframe::App for EditorState {
 
                     if ui.button("Run a stream").clicked() {
                         let message = StreamMessages::Run {
-                            start: 12369621,
-                            stop: 12369631,
+                            start: editor_config.stream_start_block,
+                            stop: editor_config.stream_stop_block,
                             api_key: api_key.to_string(),
                             package_file: editor_config.substream_package.clone(),
                             endpoint: editor_config.substream_endpoint.clone(),
@@ -464,7 +473,6 @@ impl eframe::App for EditorState {
         }
 
         if view_config.show_modules {
-            let modules = modules.clone();
             egui::SidePanel::left("Modules")
                 .max_width(250.0)
                 .show(ctx, |ui| {
