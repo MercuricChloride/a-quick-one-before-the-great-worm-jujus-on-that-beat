@@ -12,8 +12,12 @@ use eframe::{
 use rhai::{eval, Dynamic, Engine, Scope};
 use serde::{Deserialize, Serialize};
 
+pub mod modules;
 mod widgets;
 
+use modules::Module;
+use substreams_sink_rust_lib::{start_stream, start_stream_channel, StreamConfig};
+use tokio::runtime::Runtime;
 use widgets::{module_panel::ModulePanel, *};
 
 /// Config for the editor
@@ -22,158 +26,7 @@ pub struct EditorConfig {
     show_config: bool,
     show_full_source: bool,
 }
-
-#[derive(Serialize, Deserialize)]
-pub enum Module {
-    Map {
-        name: String,
-        code: String,
-        inputs: Vec<String>,
-        editing: bool,
-    },
-    Store {
-        name: String,
-        code: String,
-        inputs: Vec<String>,
-        update_policy: String,
-        editing: bool,
-    },
-}
-
-impl Module {
-    pub fn name(&self) -> &str {
-        match self {
-            Module::Map { name, .. } => name,
-            Module::Store { name, .. } => name,
-        }
-    }
-
-    pub fn code(&self) -> &str {
-        match self {
-            Module::Map { code, .. } => code,
-            Module::Store { code, .. } => code,
-        }
-    }
-
-    pub fn code_mut(&mut self) -> &mut String {
-        match self {
-            Module::Map { code, .. } => code,
-            Module::Store { code, .. } => code,
-        }
-    }
-
-    pub fn editing(&self) -> &bool {
-        match self {
-            Module::Map { editing, .. } => editing,
-            Module::Store { editing, .. } => editing,
-        }
-    }
-
-    pub fn editing_mut(&mut self) -> &mut bool {
-        match self {
-            Module::Map { editing, .. } => editing,
-            Module::Store { editing, .. } => editing,
-        }
-    }
-
-    pub fn inputs(&self) -> &Vec<String> {
-        match self {
-            Module::Map { inputs, .. } => &inputs,
-            Module::Store { inputs, .. } => &inputs,
-        }
-    }
-
-    pub fn inputs_mut(&mut self) -> &mut Vec<String> {
-        match self {
-            Module::Map { inputs, .. } => inputs,
-            Module::Store { inputs, .. } => inputs,
-        }
-    }
-
-    fn generate_input_code(input: &str, module_map: &HashMap<String, Module>) -> String {
-        match module_map.get(input) {
-            Some(Module::Map {
-                name,
-                code,
-                inputs,
-                editing,
-            }) => {
-                format!("#{{kind: \"map\", name: \"{name}\"}}")
-            }
-            Some(Module::Store {
-                name,
-                code,
-                inputs,
-                update_policy,
-                editing,
-            }) => {
-                format!("#{{kind: \"store\", name: \"{name}\"}}")
-            }
-            None => {
-                if input == "BLOCK" {
-                    "#{kind: \"source\"}".to_string()
-                } else {
-                    panic!("Unknown input: {}", input)
-                }
-            }
-        }
-    }
-
-    fn register_module(&self, module_map: &HashMap<String, Module>) -> String {
-        let name = self.name();
-        let register_function = match self {
-            Module::Map { .. } => "add_mfn",
-            Module::Store { .. } => "add_sfn",
-        };
-
-        let input_code = self
-            .inputs()
-            .iter()
-            .map(|input| Self::generate_input_code(input, module_map))
-            .collect::<Vec<String>>()
-            .join(",");
-
-        let code = format!(
-            r#"
-{register_function}(#{{
-    name: "{name}",
-    inputs: [{input_code}],
-    handler: "{name}"
-}});
-"#
-        );
-
-        code
-    }
-
-    fn default() -> HashMap<String, Self> {
-        let mut map = HashMap::new();
-        map.insert(
-            "test_map".to_string(),
-            Module::Map {
-                name: "test_map".to_string(),
-                code: "fn test_map(BLOCK) {\n block.number \n}".to_string(),
-                inputs: vec!["BLOCK".to_string()],
-                editing: true,
-            },
-        );
-
-        map.insert(
-            "test_store".to_string(),
-            Module::Store {
-                name: "test_store".to_string(),
-                code: "fn test_store(test_map,s) {\n s.set(test_map); \n}".to_string(),
-                inputs: vec!["test_map".to_string()],
-                update_policy: "set".to_string(),
-                editing: true,
-            },
-        );
-        map
-    }
-}
-
 /// Messages that can be sent to the worker thread
-#[derive(Serialize, Deserialize)]
 pub enum WorkerMessage {
     Eval(String),
     Reset,
@@ -183,8 +36,17 @@ pub enum WorkerMessage {
 /// Messages that can be sent to the gui thread
 pub enum GuiMessage {
     PushMessage(String),
+    PushJson(String),
     ClearMessages,
     //WriteToTemp,
+}
+
+pub enum StreamMessages {
+    Run {
+        start: i64,
+        stop: u64,
+        api_key: String,
+    },
 }
 
 /// Egui App State
@@ -204,6 +66,9 @@ pub struct EditorState {
     gui_receiver: Option<mpsc::Receiver<GuiMessage>>,
     #[serde(skip)]
     gui_sender: Option<mpsc::Sender<GuiMessage>>,
+
+    #[serde(skip)]
+    stream_sender: Option<mpsc::Sender<StreamMessages>>,
 
     #[serde(skip)]
     worker_sender: Option<mpsc::Sender<WorkerMessage>>,
@@ -233,12 +98,16 @@ impl EditorState {
         // Channel from: worker -> gui
         let (gui_send, gui_rec) = mpsc::channel();
 
+        // Channel from: gui -> stream thread
+        let (stream_send, stream_rec) = mpsc::channel();
+
         // store the sender in the state so we can send messages to the worker thread
         state.worker_sender = Some(worker_send);
         state.gui_receiver = Some(gui_rec);
         state.gui_sender = Some(gui_send.clone());
         state.modules = Arc::new(RwLock::new(Module::default()));
 
+        let gui_sender = gui_send.clone();
         thread::spawn(move || {
             let engine = Engine::new_raw();
             let scope = Scope::new();
@@ -250,21 +119,69 @@ impl EditorState {
                         WorkerMessage::Eval(code) => {
                             let result = engine.eval_with_scope::<Dynamic>(&mut scope, &code);
                             let message = format!("Result: {:?}", result);
-                            gui_send.send(GuiMessage::PushMessage(message)).unwrap()
+                            gui_sender.send(GuiMessage::PushMessage(message)).unwrap()
                         }
                         WorkerMessage::Reset => {
-                            gui_send.send(GuiMessage::ClearMessages).unwrap();
+                            gui_sender.send(GuiMessage::ClearMessages).unwrap();
                             scope.clear();
                         }
                         WorkerMessage::Build => {
                             let result = engine.eval_with_scope::<Dynamic>(&mut scope, "codegen()");
-                            gui_send
+                            gui_sender
                                 .send(GuiMessage::PushMessage(format!("Build Log: {:?}", result)))
                                 .unwrap();
                         }
                     };
                 }
             }
+        });
+
+        let gui_sender = gui_send.clone();
+        thread::spawn(move || {
+            let rt = Runtime::new().expect("Unable to create Runtime");
+            let _enter = rt.enter();
+            rt.spawn(async move {
+                loop {
+                    while let Ok(msg) = stream_rec.try_recv() {
+                        match msg {
+                            StreamMessages::Run {
+                                start: _,
+                                stop: _,
+                                api_key,
+                            } => {
+                                let default_start = 12369621;
+                                let default_stop = 12369631;
+                                let default_package_file = "https://github.com/streamingfast/substreams-uniswap-v3/releases/download/v0.2.8/substreams.spkg".to_string();
+                                let stream_config = StreamConfig {
+                                    endpoint_url: "https://mainnet.eth.streamingfast.io:443"
+                                        .to_string(),
+                                    package_file: default_package_file.to_string(),
+                                    module_name: "graph_out".to_string(),
+                                    token: Some(api_key),
+                                    start: default_start,
+                                    stop: default_stop,
+                                };
+
+                                let start_message = format!(
+                                    "Starting stream from {} to {}",
+                                    default_start, default_stop
+                                );
+
+                                if let Ok(rx) = start_stream_channel(stream_config).await {
+                                    gui_sender
+                                        .send(GuiMessage::PushMessage(start_message))
+                                        .unwrap();
+                                    while let Ok(data) = rx.recv() {
+                                        gui_sender.send(GuiMessage::PushMessage(data)).unwrap();
+                                    }
+                                } else {
+                                    let message = "Failed to start stream".to_string();
+                                    gui_sender.send(GuiMessage::PushMessage(message)).unwrap();
+                                }
+                            }
+                        }
+                    }
+                }})
         });
 
         state
@@ -317,6 +234,7 @@ impl eframe::App for EditorState {
             match msg {
                 GuiMessage::PushMessage(msg) => messages.push(msg),
                 GuiMessage::ClearMessages => messages.clear(),
+                GuiMessage::PushJson(json_str) => messages.push(json_str),
             }
         }
 
