@@ -16,19 +16,42 @@ pub mod modules;
 mod widgets;
 
 use modules::Module;
+use serde_json::Value;
 use substreams_sink_rust_lib::{start_stream, start_stream_channel, StreamConfig};
 use tokio::runtime::Runtime;
 use widgets::{module_panel::ModulePanel, *};
 
 /// Config for the editor
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct EditorConfig {
     show_config: bool,
     show_full_source: bool,
     show_null_json: bool,
+    module_name: String,
+    substream_package: String,
+    substream_endpoint: String,
     stream_start_block: i64,
     stream_stop_block: u64,
 }
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            show_config: false,
+            show_full_source: false,
+            show_null_json: false,
+            module_name: "graph_out".to_string(),
+            substream_endpoint: "https://mainnet.eth.streamingfast.io:443".to_string(),
+            // Default to the Uniswap v3 substream package
+            substream_package: "https://github.com/streamingfast/substreams-uniswap-v3/releases/download/v0.2.8/substreams.spkg".to_string(),
+            // Default to the Uniswap v3 substream package
+            stream_start_block: 12369621,
+            // Default to +10 blocks
+            stream_stop_block: 12369631,
+        }
+    }
+}
+
 /// Messages that can be sent to the worker thread
 pub enum WorkerMessage {
     Eval(String),
@@ -49,12 +72,15 @@ pub enum StreamMessages {
         start: i64,
         stop: u64,
         api_key: String,
+        package_file: String,
+        endpoint: String,
+        module_name: String,
     },
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum MessageKind {
-    JsonMessage(String),
+    JsonMessage(Value),
     TextMessage(String),
     //ErrorMessage(String),
 }
@@ -70,6 +96,8 @@ pub struct EditorState {
     // rhai_scope: Arc<RwLock<Scope<'static>>>,
     config: EditorConfig,
     messages: Vec<MessageKind>,
+    /// The search string for the messages
+    message_search: String,
     modules: Arc<RwLock<HashMap<String, Module>>>,
     display_welcome_message: bool,
 
@@ -163,27 +191,24 @@ impl EditorState {
                     while let Ok(msg) = stream_rec.try_recv() {
                         match msg {
                             StreamMessages::Run {
-                                start: _,
-                                stop: _,
+                                start,
+                                stop,
                                 api_key,
+                                package_file,
+                                endpoint,
+                                module_name,
                             } => {
-                                let default_start = 12369621;
-                                let default_stop = 12369631;
-                                let default_package_file = "https://github.com/streamingfast/substreams-uniswap-v3/releases/download/v0.2.8/substreams.spkg".to_string();
                                 let stream_config = StreamConfig {
-                                    endpoint_url: "https://mainnet.eth.streamingfast.io:443"
-                                        .to_string(),
-                                    package_file: default_package_file.to_string(),
-                                    module_name: "graph_out".to_string(),
+                                    endpoint_url: endpoint,
+                                    package_file,
+                                    module_name,
                                     token: Some(api_key),
-                                    start: default_start,
-                                    stop: default_stop,
+                                    start,
+                                    stop,
                                 };
 
-                                let start_message = format!(
-                                    "Starting stream from {} to {}",
-                                    default_start, default_stop
-                                );
+                                let start_message =
+                                    format!("Starting stream from {} to {}", start, stop);
 
                                 if let Ok(rx) = start_stream_channel(stream_config).await {
                                     gui_sender
@@ -199,7 +224,8 @@ impl EditorState {
                             }
                         }
                     }
-                }})
+                }
+            })
         });
 
         state
@@ -232,7 +258,7 @@ impl eframe::App for EditorState {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let source_file = self.source_file();
         let api_key = self.substreams_api_key.clone();
-        let show_null_json = &self.config.show_null_json;
+        let show_null_json = self.config.show_null_json.clone();
 
         let Self {
             template_repo_path,
@@ -244,6 +270,7 @@ impl eframe::App for EditorState {
             gui_receiver,
             gui_sender,
             stream_sender,
+            message_search,
             ..
         } = self;
 
@@ -260,7 +287,8 @@ impl eframe::App for EditorState {
                 }
                 GuiMessage::ClearMessages => messages.clear(),
                 GuiMessage::PushJson(json_str) => {
-                    let message = MessageKind::JsonMessage(json_str);
+                    let value = serde_json::from_str(&json_str).unwrap();
+                    let message = MessageKind::JsonMessage(value);
                     messages.push(message);
                 }
             }
@@ -270,6 +298,7 @@ impl eframe::App for EditorState {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Config", |ui| {
                     ui.checkbox(&mut config.show_config, "Open Config Panel");
+                    ui.checkbox(&mut config.show_null_json, "Show Null Json?");
                     ui.checkbox(&mut config.show_full_source, "Show Full Source");
                 });
 
@@ -284,6 +313,9 @@ impl eframe::App for EditorState {
                             start: 12369621,
                             stop: 12369631,
                             api_key: api_key.to_string(),
+                            package_file: config.substream_package.clone(),
+                            endpoint: config.substream_endpoint.clone(),
+                            module_name: config.module_name.clone(),
                         };
                         stream_sender.send(message).unwrap()
                     }
@@ -296,10 +328,38 @@ impl eframe::App for EditorState {
             });
 
             if config.show_config {
-                Window::new("Config").show(ctx, |ui| {
+                Window::new("Config").min_width(250.0).show(ctx, |ui| {
                     ui.vertical(|ui| {
                         ui.label("Template Repository Path");
                         ui.text_edit_singleline(template_repo_path);
+                        ui.separator();
+
+                        ui.label("Substreams Endpoint");
+                        ui.text_edit_singleline(&mut config.substream_endpoint);
+                        ui.separator();
+
+                        ui.label("Substreams Package");
+                        ui.text_edit_singleline(&mut config.substream_package);
+                        ui.separator();
+
+                        ui.label("Module Name");
+                        ui.text_edit_singleline(&mut config.module_name);
+                        ui.separator();
+
+                        ui.label("Start Block");
+                        let mut start_block = config.stream_start_block.to_string();
+                        ui.text_edit_singleline(&mut start_block);
+                        if let Ok(start_block) = start_block.parse::<i64>() {
+                            config.stream_start_block = start_block;
+                        }
+                        ui.separator();
+
+                        ui.label("Stop Block");
+                        let mut stop_block = config.stream_stop_block.to_string();
+                        ui.text_edit_singleline(&mut stop_block);
+                        if let Ok(stop_block) = stop_block.parse::<u64>() {
+                            config.stream_stop_block = stop_block;
+                        }
                     })
                 });
             }
@@ -312,9 +372,10 @@ impl eframe::App for EditorState {
             }
         };
 
-        let message_panel = |ui: &mut Ui| {
+        let mut message_panel = |ui: &mut Ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Messages");
+                ui.text_edit_singleline(message_search);
                 ui.horizontal(|ui| {
                     if ui.button("Clear Messages").clicked() {
                         gui_sender.send(GuiMessage::ClearMessages).unwrap();
@@ -322,16 +383,30 @@ impl eframe::App for EditorState {
                 });
                 ui.separator();
                 ui.vertical(|ui| {
-                    for message in messages.iter() {
+                    for (i, message) in messages.iter().enumerate() {
                         match message {
-                            MessageKind::JsonMessage(msg) => {
-                                let value: serde_json::Value = serde_json::from_str(&msg).unwrap();
+                            MessageKind::JsonMessage(json) => {
+                                match &json {
+                                    serde_json::Value::Null => continue,
+                                    serde_json::Value::Array(arr) => {
+                                        if arr.is_empty() {
+                                            continue;
+                                        }
+                                    }
+                                    serde_json::Value::Object(obj) => {
+                                        if obj.is_empty() {
+                                            continue;
+                                        }
+                                    }
+                                    _ => {}
+                                };
 
-                                if value.is_null() && !config.show_null_json {
-                                    continue;
-                                } else {
-                                    egui_json_tree::JsonTree::new(&msg, &value).show(ui);
-                                }
+                                let id = format!("json_message:{}", i);
+                                egui_json_tree::JsonTree::new(id, json)
+                                    .default_expand(egui_json_tree::DefaultExpand::SearchResults(
+                                        message_search,
+                                    ))
+                                    .show(ui);
                             }
                             MessageKind::TextMessage(msg) => {
                                 ui.label(msg);
