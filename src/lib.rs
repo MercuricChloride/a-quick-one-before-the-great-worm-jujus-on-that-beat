@@ -1,17 +1,20 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
     fs,
-    sync::{mpsc::channel, Mutex},
+    sync::{mpsc, Arc, Mutex, RwLock},
     thread,
 };
 
 use eframe::{
-    egui::{self, ComboBox, Key, Ui, Widget, Window},
+    egui::{self, ComboBox, Frame, Key, Ui, Widget, Window},
     run_native, AppCreator, NativeOptions,
 };
 use rhai::{eval, Dynamic, Engine, Scope};
 use serde::{Deserialize, Serialize};
+
+mod widgets;
+
+use widgets::{module_panel::ModulePanel, *};
 
 /// Config for the editor
 #[derive(Default, Serialize, Deserialize)]
@@ -149,7 +152,7 @@ impl Module {
             "test_map".to_string(),
             Module::Map {
                 name: "test_map".to_string(),
-                code: "fn test_map(BLOCK) { block.number }".to_string(),
+                code: "fn test_map(BLOCK) {\n block.number \n}".to_string(),
                 inputs: vec!["BLOCK".to_string()],
                 editing: true,
             },
@@ -159,7 +162,7 @@ impl Module {
             "test_store".to_string(),
             Module::Store {
                 name: "test_store".to_string(),
-                code: "fn test_store(test_map,s) { s.set(test_map); }".to_string(),
+                code: "fn test_store(test_map,s) {\n s.set(test_map); \n}".to_string(),
                 inputs: vec!["test_map".to_string()],
                 update_policy: "set".to_string(),
                 editing: true,
@@ -169,37 +172,43 @@ impl Module {
     }
 }
 
-/// Egui App State
+/// Messages that can be sent to the worker thread
 #[derive(Serialize, Deserialize)]
-pub struct EditorState {
-    template_repo_path: String,
-    #[serde(skip)]
-    rhai_engine: Engine,
-    #[serde(skip)]
-    rhai_scope: Mutex<Scope<'static>>,
-    config: EditorConfig,
-    messages: Mutex<Vec<String>>,
-    modules: Mutex<HashMap<String, Module>>,
-    display_welcome_message: bool,
+pub enum WorkerMessage {
+    Eval(String),
+    Reset,
+    Build,
+    WriteToTemp,
 }
 
-impl Default for EditorState {
-    fn default() -> Self {
-        let engine = Engine::new_raw();
-        let scope = Scope::new();
-        let (engine, scope) = rhai::packages::streamline::init_package(engine, scope);
+/// Messages that can be sent to the gui thread
+pub enum GuiMessage {
+    PushMessage(String),
+    ClearMessages,
+}
 
-        Self {
-            template_repo_path: "/home/alexandergusev/streamline/streamline-template-repository/"
-                .to_string(),
-            rhai_engine: engine,
-            rhai_scope: scope.into(),
-            config: EditorConfig::default(),
-            messages: Vec::new().into(),
-            modules: Module::default().into(),
-            display_welcome_message: true,
-        }
-    }
+/// Egui App State
+#[derive(Default, Serialize, Deserialize)]
+pub struct EditorState {
+    template_repo_path: String,
+    // #[serde(skip)]
+    // rhai_engine: Arc<RwLock<Engine>>,
+    // #[serde(skip)]
+    // rhai_scope: Arc<RwLock<Scope<'static>>>,
+    config: EditorConfig,
+    messages: Vec<String>,
+    modules: HashMap<String, Module>,
+    display_welcome_message: bool,
+
+    #[serde(skip)]
+    gui_receiver: Option<mpsc::Receiver<GuiMessage>>,
+    #[serde(skip)]
+    gui_sender: Option<mpsc::Sender<GuiMessage>>,
+
+    #[serde(skip)]
+    worker_sender: Option<mpsc::Sender<WorkerMessage>>,
+    #[serde(skip)]
+    message_receiver: Option<mpsc::Receiver<WorkerMessage>>,
 }
 
 impl EditorState {
@@ -212,27 +221,70 @@ impl EditorState {
         // Bootstrap the engine with the rhai_egui module
         //init_engine(&mut engine);
 
-        // try to recover the state from storage
-
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
+        let mut state;
+
         #[cfg(not(feature = "dev"))]
         if let Some(storage) = cc.storage {
-            let engine = Engine::new_raw();
-            let scope = Scope::new();
-            let (engine, scope) = rhai::packages::streamline::init_package(engine, scope);
-            let mut state: Self = eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-            state.rhai_engine = engine;
-            state.rhai_scope = scope.into();
-            return state;
+            state = eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+        } else {
+            state = Self::default();
+        };
+
+        #[cfg(feature = "dev")]
+        {
+            state = Self::default();
         }
 
-        // If we failed to recover the state, return a default state
-        Self::default()
+        // Channel from: gui -> worker thread
+        let (worker_send, worker_rec) = mpsc::channel();
+
+        // Channel from: worker -> gui
+        let (gui_send, gui_rec) = mpsc::channel();
+
+        // store the sender in the state so we can send messages to the worker thread
+        state.worker_sender = Some(worker_send);
+        state.gui_receiver = Some(gui_rec);
+        state.gui_sender = Some(gui_send.clone());
+
+        thread::spawn(move || {
+            let engine = Engine::new_raw();
+            let mut scope = Scope::new();
+
+            loop {
+                while let Ok(msg) = worker_rec.try_recv() {
+                    match msg {
+                        WorkerMessage::Eval(code) => {
+                            let result = engine.eval::<Dynamic>(&code);
+                            let message = format!("Result: {:?}", result);
+                            gui_send.send(GuiMessage::PushMessage(message)).unwrap()
+                        }
+                        WorkerMessage::Reset => {
+                            gui_send.send(GuiMessage::ClearMessages).unwrap();
+                            scope.clear();
+                        }
+                        WorkerMessage::Build => {
+                            let result = engine.eval::<Dynamic>("codegen()");
+                            gui_send
+                                .send(GuiMessage::PushMessage(format!("Build Log: {:?}", result)))
+                                .unwrap();
+                        }
+                        WorkerMessage::WriteToTemp => {
+                            let path = "/tmp/streamline_ide_output.rhai";
+                            //let source_file = self.source_file();
+                            //fs::write(path, &source_file).unwrap();
+                        }
+                    };
+                }
+            }
+        });
+
+        state
     }
 
     pub fn source_file(&self) -> String {
-        let modules = self.modules.lock().unwrap();
+        let modules = &self.modules;
         let mut source = String::new();
         for module in modules.values() {
             source.push_str(&module.register_module(&modules));
@@ -260,15 +312,28 @@ impl eframe::App for EditorState {
 
         let Self {
             template_repo_path,
-            rhai_engine,
-            rhai_scope,
             config,
             messages,
             modules,
             display_welcome_message,
+            worker_sender,
+            gui_receiver,
+            gui_sender,
+            ..
         } = self;
 
-        let menu_bar = |ui: &mut Ui| {
+        let worker_sender = worker_sender.as_ref().unwrap();
+        let gui_receiver = gui_receiver.as_mut().unwrap();
+        let gui_sender = gui_sender.as_ref().unwrap();
+
+        while let Ok(msg) = gui_receiver.try_recv() {
+            match msg {
+                GuiMessage::PushMessage(msg) => messages.push(msg),
+                GuiMessage::ClearMessages => messages.clear(),
+            }
+        }
+
+        let mut menu_bar = |ui: &mut Ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Config", |ui| {
                     ui.checkbox(&mut config.show_config, "Open Config Panel");
@@ -286,116 +351,28 @@ impl eframe::App for EditorState {
             }
 
             if config.show_full_source {
-                Window::new("Full Source").show(ctx, |ui| rust_view_ui(ui, &source_file));
+                let style = egui::Style::default();
+                Frame::central_panel(&style).show(ui, |ui| {
+                    Window::new("Full Source").show(ctx, |ui| rust_view_ui(ui, &source_file));
+                });
             }
 
             ui.horizontal(|ui| {
                 if ui.button("Run in repl").clicked() {
-                    let result = rhai_engine.eval::<Dynamic>(&source_file);
-                    let mut messages = messages.lock().unwrap();
-                    messages.push(format!("Result: {:?}", result));
+                    //let message = EditorMessage::Eval(source_file);
+                    //channel.send(message).unwrap();
                 }
 
                 if ui.button("Build").clicked() {
-                    let result = rhai_engine.eval::<Dynamic>("codegen()").unwrap();
-                    let mut messages = messages.lock().unwrap();
-                    messages.push(format!("Build result: {:?}", result));
+                    let message = WorkerMessage::Build;
+                    worker_sender.send(message).unwrap();
                 }
 
                 if ui.button("Write to temp").clicked() {
-                    let path = "/tmp/streamline_ide_output.rhai";
-                    fs::write(path, source_file).unwrap();
+                    let message = WorkerMessage::WriteToTemp;
+                    worker_sender.send(message).unwrap();
                 }
             })
-        };
-
-        let module_panel = |ui: &mut Ui| {
-            egui::Grid::new("Modules")
-                .num_columns(1)
-                .spacing([40.0, 4.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    //ui.heading("Modules");
-                    //ui.separator();
-                    let mut modules = modules.lock().unwrap();
-                    let module_names = modules
-                        .iter()
-                        .map(|(k, v)| v.name().to_string())
-                        .collect::<Vec<_>>();
-                    for (name, module) in modules.iter_mut() {
-                        // TODO Fix this lazy clone
-                        ui.collapsing(name.as_str(), |ui| {
-                            for input in module.inputs_mut() {
-                                ComboBox::from_label("Input")
-                                    .selected_text(input.as_str())
-                                    .show_ui(ui, |ui| {
-                                        for module_name in module_names.iter() {
-                                            if &module_name == &input {
-                                                continue;
-                                            }
-                                            ui.selectable_value(
-                                                input,
-                                                module_name.to_string(),
-                                                module_name,
-                                            );
-                                        }
-                                        ui.selectable_value(input, "BLOCK".to_string(), "BLOCK");
-                                    });
-                            }
-                            ui.checkbox(module.editing_mut(), "Show Editor?");
-                            if *module.editing() {
-                                Window::new(name).show(ctx, |ui| {
-                                    ui.vertical(|ui| {
-                                        ui.horizontal(|ui| {
-                                            if ui.button("Eval").clicked()
-                                                || ctx.input(|i| {
-                                                    i.key_pressed(Key::Enter) && i.modifiers.ctrl
-                                                })
-                                            {
-                                                let result =
-                                                    rhai_engine.eval::<Dynamic>(module.code());
-                                                let mut messages = messages.lock().unwrap();
-                                                messages.push(format!("Result: {:?}", result));
-                                            }
-
-                                            ui.collapsing("Module Configuration", |ui| {});
-                                        });
-                                        ui.code_editor(module.code_mut());
-                                    });
-                                });
-                            }
-                        });
-                        ui.end_row();
-                    }
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Add Mfn").clicked() {
-                            let name = "template_mfn";
-                            modules.insert(
-                                name.to_string(),
-                                Module::Map {
-                                    name: name.to_string(),
-                                    code: format!("fn {name}(BLOCK) {{ block.number }}"),
-                                    inputs: vec!["BLOCK".to_string()],
-                                    editing: true,
-                                },
-                            );
-                        }
-                        if ui.button("Add SFN").clicked() {
-                            let name = "template_sfn";
-                            modules.insert(
-                                name.to_string(),
-                                Module::Store {
-                                    name: name.to_string(),
-                                    code: format!("fn {name}(test_map,s) {{ s.set(test_map); }}"),
-                                    inputs: vec!["test_map".to_string()],
-                                    update_policy: "set".to_string(),
-                                    editing: true,
-                                },
-                            );
-                        }
-                    })
-                });
         };
 
         let message_panel = |ui: &mut Ui| {
@@ -403,18 +380,18 @@ impl eframe::App for EditorState {
                 ui.heading("Messages");
                 ui.horizontal(|ui| {
                     if ui.button("Clear Messages").clicked() {
-                        let mut messages = messages.lock().unwrap();
-                        let mut rhai_scope = rhai_scope.lock().unwrap();
-                        rhai_scope.clear();
-                        messages.clear();
+                        gui_sender.send(GuiMessage::ClearMessages).unwrap();
                     }
                 });
                 ui.separator();
                 ui.vertical(|ui| {
-                    let messages = messages.lock().unwrap();
                     for message in messages.iter() {
                         ui.label(message);
                     }
+                    // let messages = messages.read().unwrap();
+                    // for message in messages.iter() {
+                    //     ui.label(message);
+                    // }
                 });
             });
         };
@@ -442,11 +419,14 @@ impl eframe::App for EditorState {
             return ();
         }
 
-        egui::SidePanel::left("Modules")
-            .max_width(250.0)
-            .show(ctx, |ui| {
-                module_panel(ui);
-            });
+        //let modules = modules.clone();
+        // egui::SidePanel::left("Modules")
+        //     .max_width(250.0)
+        //     .show(ctx, |ui| {
+        //         //let channel = message_sender.clone();
+        //         //let view = ModulePanel::new(ctx, channel, modules);
+        //         //ui.add(view)
+        //     });
 
         egui::SidePanel::right("Messages").show(ctx, |ui| {
             message_panel(ui);
