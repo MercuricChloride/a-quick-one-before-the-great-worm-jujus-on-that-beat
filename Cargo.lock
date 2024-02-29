@@ -3161,6 +3161,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "egui_json_tree",
+ "rand",
  "rhai",
  "serde",
  "serde_json",

@@ -1,3 +1,5 @@
+use eframe::epaint::ahash::random_state;
+use rand::{random, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -68,23 +70,30 @@ impl Module {
         }
     }
 
-    fn generate_input_code(input: &str, module_map: &HashMap<String, Module>) -> String {
-        match module_map.get(input) {
-            Some(Module::Map {
-                name,
-                code,
-                inputs,
-                editing,
-            }) => {
+    fn generate_input_code(input: &str, module_map: &HashMap<i64, Module>) -> String {
+        let module = module_map.iter().find(|(_, module)| module.name() == input);
+        match module {
+            Some((
+                _num,
+                Module::Map {
+                    name,
+                    code,
+                    inputs,
+                    editing,
+                },
+            )) => {
                 format!("#{{kind: \"map\", name: \"{name}\"}}")
             }
-            Some(Module::Store {
-                name,
-                code,
-                inputs,
-                update_policy,
-                editing,
-            }) => {
+            Some((
+                _num,
+                Module::Store {
+                    name,
+                    code,
+                    inputs,
+                    update_policy,
+                    editing,
+                },
+            )) => {
                 format!("#{{kind: \"store\", name: \"{name}\"}}")
             }
             None => {
@@ -97,7 +106,7 @@ impl Module {
         }
     }
 
-    pub fn register_module(&self, module_map: &HashMap<String, Module>) -> String {
+    pub fn register_module(&self, module_map: &HashMap<i64, Module>) -> String {
         let name = self.name();
         let register_function = match self {
             Module::Map { .. } => "add_mfn",
@@ -124,10 +133,10 @@ impl Module {
         code
     }
 
-    pub fn default() -> HashMap<String, Self> {
+    pub fn default() -> HashMap<i64, Self> {
         let mut map = HashMap::new();
         map.insert(
-            "test_map".to_string(),
+            random(),
             Module::Map {
                 name: "test_map".to_string(),
                 code: "fn test_map(BLOCK) {\n block.number \n}".to_string(),
@@ -137,7 +146,7 @@ impl Module {
         );
 
         map.insert(
-            "test_store".to_string(),
+            random(),
             Module::Store {
                 name: "test_store".to_string(),
                 code: "fn test_store(test_map,s) {\n s.set(test_map); \n}".to_string(),

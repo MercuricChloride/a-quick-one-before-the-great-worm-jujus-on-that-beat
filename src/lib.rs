@@ -116,7 +116,7 @@ pub struct EditorState {
     /// The search string for the messages
     message_search: String,
 
-    modules: HashMap<String, Module>,
+    modules: HashMap<i64, Module>,
 
     display_welcome_message: bool,
 

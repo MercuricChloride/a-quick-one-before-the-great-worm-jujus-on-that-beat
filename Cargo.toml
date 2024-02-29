@@ -14,6 +14,7 @@ substreams-sink-rust-lib = { git = "https://github.com/MercuricChloride/substrea
 tokio = "1.36.0"
 dotenv = "0.15.0"
 egui_json_tree = "0.4.0"
+rand = "0.8.5"
 
 [features]
 dev = []
