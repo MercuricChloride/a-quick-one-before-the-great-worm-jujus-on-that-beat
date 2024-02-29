@@ -9,6 +9,7 @@ use eframe::{
     egui::{self, ComboBox, Frame, Key, Ui, Widget, Window},
     run_native, AppCreator, NativeOptions,
 };
+
 use rhai::{eval, Dynamic, Engine, Scope};
 use serde::{Deserialize, Serialize};
 
@@ -24,9 +25,6 @@ use widgets::{module_panel::ModulePanel, *};
 /// Config for the editor
 #[derive(Serialize, Deserialize)]
 pub struct EditorConfig {
-    show_config: bool,
-    show_full_source: bool,
-    show_null_json: bool,
     module_name: String,
     substream_package: String,
     substream_endpoint: String,
@@ -34,12 +32,18 @@ pub struct EditorConfig {
     stream_stop_block: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct EditorViews {
+    show_config: bool,
+    show_full_source: bool,
+    show_null_json: bool,
+    show_modules: bool,
+    show_messages: bool,
+}
+
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
-            show_config: false,
-            show_full_source: false,
-            show_null_json: false,
             module_name: "graph_out".to_string(),
             substream_endpoint: "https://mainnet.eth.streamingfast.io:443".to_string(),
             // Default to the Uniswap v3 substream package
@@ -48,6 +52,18 @@ impl Default for EditorConfig {
             stream_start_block: 12369621,
             // Default to +10 blocks
             stream_stop_block: 12369631,
+        }
+    }
+}
+
+impl Default for EditorViews {
+    fn default() -> Self {
+        Self {
+            show_config: false,
+            show_full_source: false,
+            show_null_json: false,
+            show_modules: true,
+            show_messages: true,
         }
     }
 }
@@ -89,16 +105,19 @@ pub enum MessageKind {
 #[derive(Default, Serialize, Deserialize)]
 pub struct EditorState {
     template_repo_path: String,
+
     substreams_api_key: String,
-    // #[serde(skip)]
-    // rhai_engine: Arc<RwLock<Engine>>,
-    // #[serde(skip)]
-    // rhai_scope: Arc<RwLock<Scope<'static>>>,
-    config: EditorConfig,
+
+    editor_config: EditorConfig,
+
+    view_config: EditorViews,
+
     messages: Vec<MessageKind>,
     /// The search string for the messages
     message_search: String,
+
     modules: Arc<RwLock<HashMap<String, Module>>>,
+
     display_welcome_message: bool,
 
     #[serde(skip)]
@@ -258,11 +277,11 @@ impl eframe::App for EditorState {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let source_file = self.source_file();
         let api_key = self.substreams_api_key.clone();
-        let show_null_json = self.config.show_null_json.clone();
 
         let Self {
             template_repo_path,
-            config,
+            editor_config,
+            view_config,
             messages,
             modules,
             display_welcome_message,
@@ -294,12 +313,14 @@ impl eframe::App for EditorState {
             }
         }
 
-        let mut menu_bar = |ui: &mut Ui| {
+        let mut menu_bar = |ui: &mut Ui, view_config: &mut EditorViews| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("Config", |ui| {
-                    ui.checkbox(&mut config.show_config, "Open Config Panel");
-                    ui.checkbox(&mut config.show_null_json, "Show Null Json?");
-                    ui.checkbox(&mut config.show_full_source, "Show Full Source");
+                ui.menu_button("Panels", |ui| {
+                    ui.checkbox(&mut view_config.show_config, "Toggle Config Panel");
+                    ui.checkbox(&mut view_config.show_modules, "Toggle Modules Panel");
+                    ui.checkbox(&mut view_config.show_messages, "Toggle Messages Panel");
+                    ui.checkbox(&mut view_config.show_null_json, "Show Null Json?");
+                    ui.checkbox(&mut view_config.show_full_source, "Show Full Source");
                 });
 
                 ui.menu_button("Run", |ui| {
@@ -313,9 +334,9 @@ impl eframe::App for EditorState {
                             start: 12369621,
                             stop: 12369631,
                             api_key: api_key.to_string(),
-                            package_file: config.substream_package.clone(),
-                            endpoint: config.substream_endpoint.clone(),
-                            module_name: config.module_name.clone(),
+                            package_file: editor_config.substream_package.clone(),
+                            endpoint: editor_config.substream_endpoint.clone(),
+                            module_name: editor_config.module_name.clone(),
                         };
                         stream_sender.send(message).unwrap()
                     }
@@ -327,7 +348,7 @@ impl eframe::App for EditorState {
                 });
             });
 
-            if config.show_config {
+            if view_config.show_config {
                 Window::new("Config").min_width(250.0).show(ctx, |ui| {
                     ui.vertical(|ui| {
                         ui.label("Template Repository Path");
@@ -335,36 +356,37 @@ impl eframe::App for EditorState {
                         ui.separator();
 
                         ui.label("Substreams Endpoint");
-                        ui.text_edit_singleline(&mut config.substream_endpoint);
+                        ui.text_edit_singleline(&mut editor_config.substream_endpoint);
                         ui.separator();
 
                         ui.label("Substreams Package");
-                        ui.text_edit_singleline(&mut config.substream_package);
+                        ui.text_edit_singleline(&mut editor_config.substream_package);
                         ui.separator();
 
                         ui.label("Module Name");
-                        ui.text_edit_singleline(&mut config.module_name);
+                        ui.text_edit_singleline(&mut editor_config.module_name);
                         ui.separator();
 
                         ui.label("Start Block");
-                        let mut start_block = config.stream_start_block.to_string();
+
+                        let mut start_block = editor_config.stream_start_block.to_string();
                         ui.text_edit_singleline(&mut start_block);
                         if let Ok(start_block) = start_block.parse::<i64>() {
-                            config.stream_start_block = start_block;
+                            editor_config.stream_start_block = start_block;
                         }
                         ui.separator();
 
                         ui.label("Stop Block");
-                        let mut stop_block = config.stream_stop_block.to_string();
+                        let mut stop_block = editor_config.stream_stop_block.to_string();
                         ui.text_edit_singleline(&mut stop_block);
                         if let Ok(stop_block) = stop_block.parse::<u64>() {
-                            config.stream_stop_block = stop_block;
+                            editor_config.stream_stop_block = stop_block;
                         }
                     })
                 });
             }
 
-            if config.show_full_source {
+            if view_config.show_full_source {
                 let style = egui::Style::default();
                 Frame::central_panel(&style).show(ui, |ui| {
                     Window::new("Full Source").show(ctx, |ui| rust_view_ui(ui, &source_file));
@@ -441,21 +463,25 @@ impl eframe::App for EditorState {
             return ();
         }
 
-        let modules = modules.clone();
-        egui::SidePanel::left("Modules")
-            .max_width(250.0)
-            .show(ctx, |ui| {
-                let channel = worker_sender.clone();
-                let view = ModulePanel::new(ctx, channel, modules);
-                ui.add(view)
-            });
+        if view_config.show_modules {
+            let modules = modules.clone();
+            egui::SidePanel::left("Modules")
+                .max_width(250.0)
+                .show(ctx, |ui| {
+                    let channel = worker_sender.clone();
+                    let view = ModulePanel::new(ctx, channel, modules);
+                    ui.add(view)
+                });
+        }
 
-        egui::SidePanel::right("Messages").show(ctx, |ui| {
-            message_panel(ui);
-        });
+        if view_config.show_messages {
+            egui::SidePanel::right("Messages").show(ctx, |ui| {
+                message_panel(ui);
+            });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            menu_bar(ui);
+            menu_bar(ui, view_config);
         });
     }
 }
