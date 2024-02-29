@@ -178,13 +178,13 @@ pub enum WorkerMessage {
     Eval(String),
     Reset,
     Build,
-    WriteToTemp,
 }
 
 /// Messages that can be sent to the gui thread
 pub enum GuiMessage {
     PushMessage(String),
     ClearMessages,
+    //WriteToTemp,
 }
 
 /// Egui App State
@@ -197,7 +197,7 @@ pub struct EditorState {
     // rhai_scope: Arc<RwLock<Scope<'static>>>,
     config: EditorConfig,
     messages: Vec<String>,
-    modules: HashMap<String, Module>,
+    modules: Arc<RwLock<HashMap<String, Module>>>,
     display_welcome_message: bool,
 
     #[serde(skip)]
@@ -213,16 +213,6 @@ pub struct EditorState {
 
 impl EditorState {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
-        // Restore app state using cc.storage (requires the "persistence" feature).
-        // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
-        // for e.g. egui::PaintCallback.
-        //let mut engine = Engine::new();
-        // Bootstrap the engine with the rhai_egui module
-        //init_engine(&mut engine);
-
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
         let mut state;
 
         #[cfg(not(feature = "dev"))]
@@ -247,16 +237,18 @@ impl EditorState {
         state.worker_sender = Some(worker_send);
         state.gui_receiver = Some(gui_rec);
         state.gui_sender = Some(gui_send.clone());
+        state.modules = Arc::new(RwLock::new(Module::default()));
 
         thread::spawn(move || {
             let engine = Engine::new_raw();
-            let mut scope = Scope::new();
+            let scope = Scope::new();
+            let (engine, mut scope) = rhai::packages::streamline::init_package(engine, scope);
 
             loop {
                 while let Ok(msg) = worker_rec.try_recv() {
                     match msg {
                         WorkerMessage::Eval(code) => {
-                            let result = engine.eval::<Dynamic>(&code);
+                            let result = engine.eval_with_scope::<Dynamic>(&mut scope, &code);
                             let message = format!("Result: {:?}", result);
                             gui_send.send(GuiMessage::PushMessage(message)).unwrap()
                         }
@@ -265,15 +257,10 @@ impl EditorState {
                             scope.clear();
                         }
                         WorkerMessage::Build => {
-                            let result = engine.eval::<Dynamic>("codegen()");
+                            let result = engine.eval_with_scope::<Dynamic>(&mut scope, "codegen()");
                             gui_send
                                 .send(GuiMessage::PushMessage(format!("Build Log: {:?}", result)))
                                 .unwrap();
-                        }
-                        WorkerMessage::WriteToTemp => {
-                            let path = "/tmp/streamline_ide_output.rhai";
-                            //let source_file = self.source_file();
-                            //fs::write(path, &source_file).unwrap();
                         }
                     };
                 }
@@ -284,7 +271,7 @@ impl EditorState {
     }
 
     pub fn source_file(&self) -> String {
-        let modules = &self.modules;
+        let modules = self.modules.read().unwrap();
         let mut source = String::new();
         for module in modules.values() {
             source.push_str(&module.register_module(&modules));
@@ -339,6 +326,18 @@ impl eframe::App for EditorState {
                     ui.checkbox(&mut config.show_config, "Open Config Panel");
                     ui.checkbox(&mut config.show_full_source, "Show Full Source");
                 });
+
+                ui.menu_button("Run", |ui| {
+                    if ui.button("Run in repl").clicked() {
+                        //let message = WorkerMessage::Eval(source_file);
+                        //worker_sender.send(message).unwrap();
+                    }
+
+                    if ui.button("Build").clicked() {
+                        let message = WorkerMessage::Build;
+                        worker_sender.send(message).unwrap();
+                    }
+                });
             });
 
             if config.show_config {
@@ -356,27 +355,10 @@ impl eframe::App for EditorState {
                     Window::new("Full Source").show(ctx, |ui| rust_view_ui(ui, &source_file));
                 });
             }
-
-            ui.horizontal(|ui| {
-                if ui.button("Run in repl").clicked() {
-                    //let message = EditorMessage::Eval(source_file);
-                    //channel.send(message).unwrap();
-                }
-
-                if ui.button("Build").clicked() {
-                    let message = WorkerMessage::Build;
-                    worker_sender.send(message).unwrap();
-                }
-
-                if ui.button("Write to temp").clicked() {
-                    let message = WorkerMessage::WriteToTemp;
-                    worker_sender.send(message).unwrap();
-                }
-            })
         };
 
         let message_panel = |ui: &mut Ui| {
-            ui.vertical(|ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Messages");
                 ui.horizontal(|ui| {
                     if ui.button("Clear Messages").clicked() {
@@ -388,12 +370,8 @@ impl eframe::App for EditorState {
                     for message in messages.iter() {
                         ui.label(message);
                     }
-                    // let messages = messages.read().unwrap();
-                    // for message in messages.iter() {
-                    //     ui.label(message);
-                    // }
                 });
-            });
+            })
         };
 
         if *display_welcome_message {
@@ -419,14 +397,14 @@ impl eframe::App for EditorState {
             return ();
         }
 
-        //let modules = modules.clone();
-        // egui::SidePanel::left("Modules")
-        //     .max_width(250.0)
-        //     .show(ctx, |ui| {
-        //         //let channel = message_sender.clone();
-        //         //let view = ModulePanel::new(ctx, channel, modules);
-        //         //ui.add(view)
-        //     });
+        let modules = modules.clone();
+        egui::SidePanel::left("Modules")
+            .max_width(250.0)
+            .show(ctx, |ui| {
+                let channel = worker_sender.clone();
+                let view = ModulePanel::new(ctx, channel, modules);
+                ui.add(view)
+            });
 
         egui::SidePanel::right("Messages").show(ctx, |ui| {
             message_panel(ui);
@@ -437,17 +415,3 @@ impl eframe::App for EditorState {
         });
     }
 }
-
-// pub fn init_engine(engine: &mut Engine) -> &mut Engine {
-//     engine.register_fn("run_gui", |app: AppCreator| {
-//         let native_options = NativeOptions::default();
-//         run_native(
-//             "Rhai Egui",
-//             native_options,
-//             Box::new(|cc| Box::new(MyEguiApp::new(cc))),
-//         )
-//         .unwrap();
-//     });
-
-//     engine
-// }

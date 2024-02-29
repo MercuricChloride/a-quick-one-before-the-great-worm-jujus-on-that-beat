@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{mpsc, RwLock},
+    sync::{mpsc, Arc, RwLock},
 };
 
 use eframe::egui::{self, ComboBox, Key, Response, Ui, Widget, Window};
@@ -10,14 +10,14 @@ use crate::{Module, WorkerMessage};
 pub struct ModulePanel<'a> {
     context: &'a egui::Context,
     channel: mpsc::Sender<WorkerMessage>,
-    modules: &'a mut RwLock<HashMap<String, Module>>,
+    modules: Arc<RwLock<HashMap<String, Module>>>,
 }
 
 impl<'a> ModulePanel<'a> {
     pub fn new(
         context: &'a egui::Context,
         channel: mpsc::Sender<WorkerMessage>,
-        modules: &'a mut RwLock<HashMap<String, Module>>,
+        modules: Arc<RwLock<HashMap<String, Module>>>,
     ) -> Self {
         Self {
             context,
@@ -73,7 +73,7 @@ impl Widget for ModulePanel<'_> {
                                 {
                                     let code = module.code();
                                     let message = WorkerMessage::Eval(code.to_string());
-                                    self.channel.send(message);
+                                    self.channel.send(message).unwrap();
                                 }
 
                                 ui.collapsing("Module Configuration", |ui| {});
