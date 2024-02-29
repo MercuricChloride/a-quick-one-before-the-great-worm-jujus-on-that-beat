@@ -13,6 +13,7 @@ egui_extras = { version = "0.26.2", features = ["syntect"] }
 substreams-sink-rust-lib = { git = "https://github.com/MercuricChloride/substreams-sink-rust.git", branch = "lib-version"}
 tokio = "1.36.0"
 dotenv = "0.15.0"
+egui_json_tree = "0.4.0"
 
 [features]
 dev = []

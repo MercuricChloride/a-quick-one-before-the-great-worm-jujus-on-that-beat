@@ -25,6 +25,9 @@ use widgets::{module_panel::ModulePanel, *};
 pub struct EditorConfig {
     show_config: bool,
     show_full_source: bool,
+    show_null_json: bool,
+    stream_start_block: i64,
+    stream_stop_block: u64,
 }
 /// Messages that can be sent to the worker thread
 pub enum WorkerMessage {
@@ -49,6 +52,13 @@ pub enum StreamMessages {
     },
 }
 
+#[derive(Serialize, Deserialize)]
+pub enum MessageKind {
+    JsonMessage(String),
+    TextMessage(String),
+    //ErrorMessage(String),
+}
+
 /// Egui App State
 #[derive(Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -59,7 +69,7 @@ pub struct EditorState {
     // #[serde(skip)]
     // rhai_scope: Arc<RwLock<Scope<'static>>>,
     config: EditorConfig,
-    messages: Vec<String>,
+    messages: Vec<MessageKind>,
     modules: Arc<RwLock<HashMap<String, Module>>>,
     display_welcome_message: bool,
 
@@ -180,7 +190,7 @@ impl EditorState {
                                         .send(GuiMessage::PushMessage(start_message))
                                         .unwrap();
                                     while let Ok(data) = rx.recv() {
-                                        gui_sender.send(GuiMessage::PushMessage(data)).unwrap();
+                                        gui_sender.send(GuiMessage::PushJson(data)).unwrap();
                                     }
                                 } else {
                                     let message = "Failed to start stream".to_string();
@@ -222,6 +232,7 @@ impl eframe::App for EditorState {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let source_file = self.source_file();
         let api_key = self.substreams_api_key.clone();
+        let show_null_json = &self.config.show_null_json;
 
         let Self {
             template_repo_path,
@@ -243,9 +254,15 @@ impl eframe::App for EditorState {
 
         while let Ok(msg) = gui_receiver.try_recv() {
             match msg {
-                GuiMessage::PushMessage(msg) => messages.push(msg),
+                GuiMessage::PushMessage(msg) => {
+                    let message = MessageKind::TextMessage(msg);
+                    messages.push(message);
+                }
                 GuiMessage::ClearMessages => messages.clear(),
-                GuiMessage::PushJson(json_str) => messages.push(json_str),
+                GuiMessage::PushJson(json_str) => {
+                    let message = MessageKind::JsonMessage(json_str);
+                    messages.push(message);
+                }
             }
         }
 
@@ -306,7 +323,21 @@ impl eframe::App for EditorState {
                 ui.separator();
                 ui.vertical(|ui| {
                     for message in messages.iter() {
-                        ui.label(message);
+                        match message {
+                            MessageKind::JsonMessage(msg) => {
+                                let value: serde_json::Value = serde_json::from_str(&msg).unwrap();
+
+                                if value.is_null() && !config.show_null_json {
+                                    continue;
+                                } else {
+                                    egui_json_tree::JsonTree::new(&msg, &value).show(ui);
+                                }
+                            }
+                            MessageKind::TextMessage(msg) => {
+                                ui.label(msg);
+                            }
+                        }
+                        //ui.label(message);
                     }
                 });
             })
