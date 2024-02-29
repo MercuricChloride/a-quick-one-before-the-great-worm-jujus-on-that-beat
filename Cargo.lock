@@ -3147,6 +3147,7 @@ dependencies = [
 name = "rhai-egui"
 version = "0.1.0"
 dependencies = [
+ "dotenv",
  "eframe",
  "egui_extras",
  "rhai",

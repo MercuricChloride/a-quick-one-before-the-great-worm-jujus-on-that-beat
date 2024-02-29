@@ -53,6 +53,7 @@ pub enum StreamMessages {
 #[derive(Default, Serialize, Deserialize)]
 pub struct EditorState {
     template_repo_path: String,
+    substreams_api_key: String,
     // #[serde(skip)]
     // rhai_engine: Arc<RwLock<Engine>>,
     // #[serde(skip)]
@@ -69,6 +70,8 @@ pub struct EditorState {
 
     #[serde(skip)]
     stream_sender: Option<mpsc::Sender<StreamMessages>>,
+    #[serde(skip)]
+    stream_receiver: Option<mpsc::Receiver<StreamMessages>>,
 
     #[serde(skip)]
     worker_sender: Option<mpsc::Sender<WorkerMessage>>,
@@ -77,7 +80,7 @@ pub struct EditorState {
 }
 
 impl EditorState {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, api_key: Option<String>) -> Self {
         let mut state;
 
         #[cfg(not(feature = "dev"))]
@@ -105,7 +108,12 @@ impl EditorState {
         state.worker_sender = Some(worker_send);
         state.gui_receiver = Some(gui_rec);
         state.gui_sender = Some(gui_send.clone());
+        state.stream_sender = Some(stream_send);
+        //state.stream_receiver = Some(stream_rec);
         state.modules = Arc::new(RwLock::new(Module::default()));
+        if let Some(api_key) = api_key {
+            state.substreams_api_key = api_key;
+        }
 
         let gui_sender = gui_send.clone();
         thread::spawn(move || {
@@ -140,7 +148,7 @@ impl EditorState {
         thread::spawn(move || {
             let rt = Runtime::new().expect("Unable to create Runtime");
             let _enter = rt.enter();
-            rt.spawn(async move {
+            rt.block_on(async move {
                 loop {
                     while let Ok(msg) = stream_rec.try_recv() {
                         match msg {
@@ -213,6 +221,7 @@ impl eframe::App for EditorState {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let source_file = self.source_file();
+        let api_key = self.substreams_api_key.clone();
 
         let Self {
             template_repo_path,
@@ -223,9 +232,11 @@ impl eframe::App for EditorState {
             worker_sender,
             gui_receiver,
             gui_sender,
+            stream_sender,
             ..
         } = self;
 
+        let stream_sender = stream_sender.as_ref().unwrap();
         let worker_sender = worker_sender.as_ref().unwrap();
         let gui_receiver = gui_receiver.as_mut().unwrap();
         let gui_sender = gui_sender.as_ref().unwrap();
@@ -249,6 +260,15 @@ impl eframe::App for EditorState {
                     if ui.button("Run in repl").clicked() {
                         //let message = WorkerMessage::Eval(source_file);
                         //worker_sender.send(message).unwrap();
+                    }
+
+                    if ui.button("Run a stream").clicked() {
+                        let message = StreamMessages::Run {
+                            start: 12369621,
+                            stop: 12369631,
+                            api_key: api_key.to_string(),
+                        };
+                        stream_sender.send(message).unwrap()
                     }
 
                     if ui.button("Build").clicked() {
