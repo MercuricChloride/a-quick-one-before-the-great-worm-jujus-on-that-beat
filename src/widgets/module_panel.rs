@@ -56,6 +56,14 @@ impl Widget for ModulePanel<'_> {
                                 self.channel.send(message).unwrap();
                             }
 
+                            if ui.button("Run").clicked()
+                                || ctx.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl)
+                            {
+                                let code = module.code();
+                                let message = WorkerMessage::Run(code.to_string());
+                                self.channel.send(message).unwrap();
+                            }
+
                             ui.collapsing("Module Configuration", |ui| match module {
                                 Module::Map {
                                     name,

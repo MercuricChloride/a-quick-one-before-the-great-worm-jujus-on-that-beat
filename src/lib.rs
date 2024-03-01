@@ -14,7 +14,7 @@ use eframe::{
     run_native, AppCreator, NativeOptions,
 };
 
-use rhai::{eval, Dynamic, Engine, Scope};
+use rhai::{eval, Dynamic, Engine, EvalAltResult, OptimizationLevel, Scope, AST};
 use serde::{Deserialize, Serialize};
 
 pub mod block_cache;
@@ -195,6 +195,8 @@ impl Default for EditorViews {
 /// Messages that can be sent to the worker thread
 pub enum WorkerMessage {
     Eval(String),
+    EvalWithArgs(String, Vec<Value>),
+    Run(String),
     Reset,
     Build,
 }
@@ -267,6 +269,26 @@ pub struct EditorState {
     worker_sender: Option<mpsc::Sender<WorkerMessage>>,
 }
 
+fn build_and_run(
+    engine: &mut Engine,
+    scope: &mut Scope,
+    code: &str,
+    main_ast: &mut AST,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    engine
+        .compile_with_scope(&scope, code)
+        .map_err(Into::into)
+        .and_then(|r| {
+            let ast = engine.optimize_ast(scope, r, OptimizationLevel::Full);
+
+            // Merge the AST into the main
+            *main_ast += ast;
+
+            // Evaluate
+            engine.eval_ast_with_scope::<Dynamic>(scope, &main_ast)
+        })
+}
+
 impl EditorState {
     pub fn new(cc: &eframe::CreationContext<'_>, api_key: Option<String>) -> Self {
         let mut state;
@@ -313,7 +335,9 @@ impl EditorState {
         thread::spawn(move || {
             let engine = Engine::new_raw();
             let scope = Scope::new();
-            let (engine, mut scope) = rhai::packages::streamline::init_package(engine, scope);
+            let mut main_ast = AST::empty();
+            let (mut engine, mut scope) = rhai::packages::streamline::init_package(engine, scope);
+            engine.set_optimization_level(OptimizationLevel::Full);
 
             // TODO Add support to store outputs of streams to use as input data
 
@@ -321,9 +345,38 @@ impl EditorState {
                 while let Ok(msg) = worker_rec.try_recv() {
                     match msg {
                         WorkerMessage::Eval(code) => {
-                            let result = engine.eval_with_scope::<Dynamic>(&mut scope, &code);
+                            let result =
+                                build_and_run(&mut engine, &mut scope, &code, &mut main_ast);
+                            // let result = engine
+                            //     .eval_with_scope::<Dynamic>(&mut scope, &code)
+                            //     .unwrap();
                             let message = format!("Result: {:?}", result);
                             gui_sender.send(GuiMessage::PushMessage(message)).unwrap()
+                        }
+
+                        WorkerMessage::Run(code) => {
+                            // let result =
+                            //     build_and_run(&mut engine, &mut scope, &code, &mut main_ast);
+                            // engine.run_with_scope(&mut scope, &code).unwrap();
+                            // let message = format!("Ran");
+                            // gui_sender.send(GuiMessage::PushMessage(message)).unwrap()
+                        }
+                        WorkerMessage::EvalWithArgs(fn_name, args) => {
+                            let args = args
+                                .into_iter()
+                                .filter_map(|v| serde_json::from_value(v).ok())
+                                .collect::<Vec<Dynamic>>();
+
+                            // TODO Remove this unwrap
+                            let result: Dynamic = engine
+                                .call_fn(&mut scope, &Default::default(), &fn_name, args)
+                                .unwrap();
+
+                            let result_json_str = serde_json::to_string_pretty(&result).unwrap();
+
+                            gui_sender
+                                .send(GuiMessage::PushJson(result_json_str))
+                                .unwrap()
                         }
                         WorkerMessage::Reset => {
                             gui_sender.send(GuiMessage::ClearMessages).unwrap();
@@ -703,6 +756,14 @@ impl eframe::App for EditorState {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             menu_bar(ui, view_config);
+            if ui.button("Eval Block for `foo`").clicked() {
+                let block = block_cache.get(1 as u8);
+
+                let fn_name = "foo".to_string();
+                let args = vec![block.clone()];
+                let message = WorkerMessage::EvalWithArgs(fn_name, args);
+                worker_sender.send(message).unwrap();
+            }
         });
     }
 }
