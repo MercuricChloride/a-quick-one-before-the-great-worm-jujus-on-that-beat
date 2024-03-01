@@ -315,19 +315,25 @@ impl EditorState {
                         WorkerMessage::EvalWithArgs(fn_name, args) => {
                             let args = args
                                 .into_iter()
-                                .map(|v| serde_json::from_value(v).unwrap())
+                                .filter_map(|v| serde_json::from_value(v).ok())
                                 .collect::<Vec<Dynamic>>();
 
-                            // TODO Remove this unwrap
-                            let result: Dynamic = engine
-                                .call_fn(&mut scope, &main_ast, &fn_name, args)
-                                .unwrap();
+                            let result: Result<Dynamic, _> =
+                                engine.call_fn(&mut scope, &main_ast, &fn_name, args);
 
-                            let result_json_str = serde_json::to_string_pretty(&result).unwrap();
-
-                            gui_sender
-                                .send(GuiMessage::PushJson(result_json_str))
-                                .unwrap()
+                            match result {
+                                Ok(result) => {
+                                    let result_json_str =
+                                        serde_json::to_string_pretty(&result).unwrap();
+                                    gui_sender
+                                        .send(GuiMessage::PushJson(result_json_str))
+                                        .unwrap()
+                                }
+                                Err(err) => {
+                                    let message = format!("Error: {:?}", err);
+                                    gui_sender.send(GuiMessage::PushMessage(message)).unwrap()
+                                }
+                            }
                         }
                         WorkerMessage::Reset => {
                             gui_sender.send(GuiMessage::ClearMessages).unwrap();
@@ -602,18 +608,13 @@ impl eframe::App for EditorState {
                 worker_sender,
                 stream_sender,
             );
+
             if ui.button("Eval Block for `foo`").clicked() {
                 let block = block_cache.get(1 as u8);
 
                 gui_sender
                     .send(GuiMessage::PushMessage(
                         "Evaluating block for `foo`".to_string(),
-                    ))
-                    .unwrap();
-
-                gui_sender
-                    .send(GuiMessage::PushJson(
-                        serde_json::to_string_pretty(block).unwrap(),
                     ))
                     .unwrap();
 
