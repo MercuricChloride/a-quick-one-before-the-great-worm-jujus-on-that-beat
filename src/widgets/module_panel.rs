@@ -48,106 +48,113 @@ impl Widget for ModulePanel<'_> {
             ui.checkbox(module.editing_mut(), module_name);
 
             if *module.editing() {
-                Window::new(module.name()).show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            if ui.button("Eval").clicked()
-                                || ctx.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl)
-                            {
-                                let code = module.code();
-                                let message = WorkerMessage::Eval(code.to_string());
-                                self.channel.send(message).unwrap();
-                            }
+                Window::new(module.name())
+                    .max_height(800.0)
+                    .max_width(600.0)
+                    .show(ctx, |ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui.button("Eval").clicked()
+                                    || ctx.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl)
+                                {
+                                    let code = module.code();
+                                    let message = WorkerMessage::Eval(code.to_string());
+                                    self.channel.send(message).unwrap();
+                                }
 
-                            ui.collapsing("Module Configuration", |ui| match module {
-                                Module::Map {
-                                    name,
-                                    code,
-                                    inputs,
-                                    editing,
-                                } => {
-                                    ui.label("Module Name");
-                                    ui.text_edit_singleline(name);
-                                    ui.separator();
+                                ui.collapsing("Module Configuration", |ui| match module {
+                                    Module::Map {
+                                        name,
+                                        code,
+                                        inputs,
+                                        editing,
+                                    } => {
+                                        ui.label("Module Name");
+                                        ui.text_edit_singleline(name);
+                                        ui.separator();
 
-                                    ui.label("Inputs. (Each on a new line)");
-                                    for input in inputs.iter_mut() {
-                                        ComboBox::from_label("Input")
-                                            .selected_text(input.as_str())
-                                            .show_ui(ui, |ui| {
-                                                for module_name in module_names.iter() {
-                                                    if &module_name == &input {
-                                                        continue;
+                                        ui.label("Inputs. (Each on a new line)");
+                                        for input in inputs.iter_mut() {
+                                            ComboBox::from_label("Input")
+                                                .selected_text(input.as_str())
+                                                .show_ui(ui, |ui| {
+                                                    for module_name in module_names.iter() {
+                                                        if &module_name == &input {
+                                                            continue;
+                                                        }
+                                                        ui.selectable_value(
+                                                            input,
+                                                            module_name.to_string(),
+                                                            module_name,
+                                                        );
                                                     }
                                                     ui.selectable_value(
                                                         input,
-                                                        module_name.to_string(),
-                                                        module_name,
+                                                        "BLOCK".to_string(),
+                                                        "BLOCK",
                                                     );
-                                                }
+                                                });
+                                        }
+                                    }
+                                    Module::Store {
+                                        name,
+                                        code,
+                                        inputs,
+                                        update_policy,
+                                        editing,
+                                    } => {
+                                        ui.label("Store Configuration");
+                                        ui.separator();
+
+                                        ui.label("Module Name");
+                                        ui.text_edit_singleline(name);
+                                        ui.separator();
+
+                                        ui.label("Update Policy");
+                                        ComboBox::from_label("Update Policy")
+                                            .selected_text(update_policy.as_str())
+                                            .show_ui(ui, |ui| {
                                                 ui.selectable_value(
-                                                    input,
-                                                    "BLOCK".to_string(),
-                                                    "BLOCK",
+                                                    update_policy,
+                                                    "set".to_string(),
+                                                    "set",
+                                                );
+                                                ui.selectable_value(
+                                                    update_policy,
+                                                    "setOnce".to_string(),
+                                                    "setOnce",
                                                 );
                                             });
-                                    }
-                                }
-                                Module::Store {
-                                    name,
-                                    code,
-                                    inputs,
-                                    update_policy,
-                                    editing,
-                                } => {
-                                    ui.label("Store Configuration");
-                                    ui.separator();
 
-                                    ui.label("Module Name");
-                                    ui.text_edit_singleline(name);
-                                    ui.separator();
-
-                                    ui.label("Update Policy");
-                                    ComboBox::from_label("Update Policy")
-                                        .selected_text(update_policy.as_str())
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(
-                                                update_policy,
-                                                "set".to_string(),
-                                                "set",
-                                            );
-                                            ui.selectable_value(
-                                                update_policy,
-                                                "setOnce".to_string(),
-                                                "setOnce",
-                                            );
-                                        });
-
-                                    ui.label("Inputs. (Each on a new line)");
-                                    for input in inputs.iter_mut() {
-                                        ComboBox::from_label("Input")
-                                            .selected_text(input.as_str())
-                                            .show_ui(ui, |ui| {
-                                                for module_name in module_names.iter() {
+                                        ui.label("Inputs. (Each on a new line)");
+                                        for input in inputs.iter_mut() {
+                                            ComboBox::from_label("Input")
+                                                .selected_text(input.as_str())
+                                                .show_ui(ui, |ui| {
+                                                    for module_name in module_names.iter() {
+                                                        ui.selectable_value(
+                                                            input,
+                                                            module_name.to_string(),
+                                                            module_name,
+                                                        );
+                                                    }
                                                     ui.selectable_value(
                                                         input,
-                                                        module_name.to_string(),
-                                                        module_name,
+                                                        "BLOCK".to_string(),
+                                                        "BLOCK",
                                                     );
-                                                }
-                                                ui.selectable_value(
-                                                    input,
-                                                    "BLOCK".to_string(),
-                                                    "BLOCK",
-                                                );
-                                            });
+                                                });
+                                        }
                                     }
-                                }
+                                });
                             });
+                            ui.add_sized(
+                                ui.available_size(),
+                                egui::TextEdit::multiline(module.code_mut()).code_editor(),
+                            ); // Assuming .code_editor() is a method or extension you have for making a TextEdit suitable for code
+                               //ui.code_editor(module.code_mut());
                         });
-                        ui.code_editor(module.code_mut());
                     });
-                });
             }
             ui.end_row();
         }

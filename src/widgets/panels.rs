@@ -48,6 +48,7 @@ pub fn message_panel(
     messages: &Vec<MessageKind>,
     message_search: &mut String,
     gui_sender: &Sender<GuiMessage>,
+    worker_sender: &Sender<WorkerMessage>,
 ) {
     ScrollArea::vertical().show(ui, |ui| {
         ui.heading("Messages");

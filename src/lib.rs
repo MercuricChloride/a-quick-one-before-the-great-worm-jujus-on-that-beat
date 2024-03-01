@@ -17,6 +17,7 @@ use eframe::{
 use rhai::{eval, Dynamic, Engine, EvalAltResult, FuncArgs, OptimizationLevel, Scope, AST};
 use serde::{Deserialize, Serialize};
 
+pub mod abis;
 pub mod block_cache;
 pub mod modules;
 pub mod tasks;
@@ -209,6 +210,9 @@ pub struct EditorState {
 
     view_config: EditorViews,
 
+    /// A map from abi_name -> abj_json
+    abis: HashMap<String, String>,
+
     messages: Vec<MessageKind>,
     /// The search string for the messages
     message_search: String,
@@ -286,6 +290,11 @@ impl EditorState {
         state.stream_sender = Some(stream_send);
 
         state.modules = Module::build_default_modules();
+
+        let mut abis = HashMap::new();
+        abis.insert("erc20".into(), abis::ERC20.to_string());
+        abis.insert("erc721".into(), abis::ERC721.to_string());
+        state.abis = abis;
 
         state.display_welcome_message = true;
 
@@ -550,7 +559,7 @@ impl eframe::App for EditorState {
 
         if view_config.show_messages {
             egui::SidePanel::right("Messages").show(ctx, |ui| {
-                panels::message_panel(ui, messages, message_search, gui_sender);
+                panels::message_panel(ui, messages, message_search, gui_sender, worker_sender);
             });
         }
 
