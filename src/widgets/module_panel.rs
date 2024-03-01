@@ -32,8 +32,11 @@ impl Widget for ModulePanel<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let ctx = self.context;
         let modules = self.modules;
+
         ui.heading("Modules");
+
         ui.separator();
+
         let module_names = &modules
             .iter()
             .map(|(k, v)| v.name().to_string())
@@ -53,14 +56,6 @@ impl Widget for ModulePanel<'_> {
                             {
                                 let code = module.code();
                                 let message = WorkerMessage::Eval(code.to_string());
-                                self.channel.send(message).unwrap();
-                            }
-
-                            if ui.button("Run").clicked()
-                                || ctx.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl)
-                            {
-                                let code = module.code();
-                                let message = WorkerMessage::Run(code.to_string());
                                 self.channel.send(message).unwrap();
                             }
 

@@ -132,13 +132,13 @@ impl Module {
         code
     }
 
-    pub fn default() -> HashMap<i64, Self> {
+    pub fn build_default_modules() -> HashMap<i64, Self> {
         let mut map = HashMap::new();
         map.insert(
             random(),
             Module::Map {
-                name: "test_map".to_string(),
-                code: "fn test_map(BLOCK) {\n block.number \n}".to_string(),
+                name: "foo".to_string(),
+                code: "fn foo(BLOCK) {\n BLOCK.number \n}".to_string(),
                 inputs: vec!["BLOCK".to_string()],
                 editing: true,
             },
@@ -149,7 +149,7 @@ impl Module {
             Module::Store {
                 name: "test_store".to_string(),
                 code: "fn test_store(test_map,s) {\n s.set(test_map); \n}".to_string(),
-                inputs: vec!["test_map".to_string()],
+                inputs: vec!["foo".to_string()],
                 update_policy: "set".to_string(),
                 editing: true,
             },

@@ -14,18 +14,20 @@ use eframe::{
     run_native, AppCreator, NativeOptions,
 };
 
-use rhai::{eval, Dynamic, Engine, EvalAltResult, OptimizationLevel, Scope, AST};
+use rhai::{eval, Dynamic, Engine, EvalAltResult, FuncArgs, OptimizationLevel, Scope, AST};
 use serde::{Deserialize, Serialize};
 
 pub mod block_cache;
 pub mod modules;
+pub mod tasks;
 mod widgets;
 
 use modules::Module;
 use serde_json::Value;
 use substreams_sink_rust_lib::{start_stream, start_stream_channel, StreamConfig};
+use tasks::{GuiMessage, MessageKind, StreamMessages, WorkerMessage};
 use tokio::runtime::Runtime;
-use widgets::{module_panel::ModulePanel, *};
+use widgets::{module_panel::ModulePanel, panels::rust_view_ui, *};
 
 /// Config for the editor
 #[derive(Serialize, Deserialize)]
@@ -192,48 +194,6 @@ impl Default for EditorViews {
     }
 }
 
-/// Messages that can be sent to the worker thread
-pub enum WorkerMessage {
-    Eval(String),
-    EvalWithArgs(String, Vec<Value>),
-    Run(String),
-    Reset,
-    Build,
-}
-
-/// Messages that can be sent to the gui thread
-pub enum GuiMessage {
-    PushMessage(String),
-    PushJson(String),
-    ClearMessages,
-    //WriteToTemp,
-}
-
-pub enum StreamMessages {
-    Run {
-        start: i64,
-        stop: u64,
-        api_key: String,
-        package_file: String,
-        endpoint: String,
-        module_name: String,
-    },
-
-    GetBlock {
-        number: i64,
-        api_key: String,
-        endpoint: String,
-        cache_slot: u8,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum MessageKind {
-    JsonMessage(Value),
-    TextMessage(String),
-    //ErrorMessage(String),
-}
-
 /// Egui App State
 #[derive(Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -325,8 +285,10 @@ impl EditorState {
         // sender to the stream thread
         state.stream_sender = Some(stream_send);
 
-        //state.modules = Arc::new(RwLock::new(Module::default()));
-        state.modules = Module::default();
+        state.modules = Module::build_default_modules();
+
+        state.display_welcome_message = true;
+
         if let Some(api_key) = api_key {
             state.substreams_api_key = api_key;
         }
@@ -347,29 +309,18 @@ impl EditorState {
                         WorkerMessage::Eval(code) => {
                             let result =
                                 build_and_run(&mut engine, &mut scope, &code, &mut main_ast);
-                            // let result = engine
-                            //     .eval_with_scope::<Dynamic>(&mut scope, &code)
-                            //     .unwrap();
                             let message = format!("Result: {:?}", result);
                             gui_sender.send(GuiMessage::PushMessage(message)).unwrap()
-                        }
-
-                        WorkerMessage::Run(code) => {
-                            // let result =
-                            //     build_and_run(&mut engine, &mut scope, &code, &mut main_ast);
-                            // engine.run_with_scope(&mut scope, &code).unwrap();
-                            // let message = format!("Ran");
-                            // gui_sender.send(GuiMessage::PushMessage(message)).unwrap()
                         }
                         WorkerMessage::EvalWithArgs(fn_name, args) => {
                             let args = args
                                 .into_iter()
-                                .filter_map(|v| serde_json::from_value(v).ok())
+                                .map(|v| serde_json::from_value(v).unwrap())
                                 .collect::<Vec<Dynamic>>();
 
                             // TODO Remove this unwrap
                             let result: Dynamic = engine
-                                .call_fn(&mut scope, &Default::default(), &fn_name, args)
+                                .call_fn(&mut scope, &main_ast, &fn_name, args)
                                 .unwrap();
 
                             let result_json_str = serde_json::to_string_pretty(&result).unwrap();
@@ -462,7 +413,9 @@ impl EditorState {
                                         .send(GuiMessage::PushMessage(start_message))
                                         .unwrap();
                                     while let Ok(data) = rx.recv() {
-                                        gui_sender.send(GuiMessage::PushJson(data)).unwrap();
+                                        gui_sender
+                                            .send(GuiMessage::SetBlock(cache_slot, data))
+                                            .unwrap();
                                     }
                                 } else {
                                     let message = "Failed to get block".to_string();
@@ -489,33 +442,6 @@ impl EditorState {
 
         source
     }
-}
-
-fn user_config_ui(
-    ctx: &Context,
-    user_config: &mut UserConfig,
-    block_cache: &mut BlockCache,
-    endpoint: &str,
-    api_key: &str,
-    stream_sender: &Sender<StreamMessages>,
-) {
-    Window::new("User Config").min_width(250.0).show(ctx, |ui| {
-        ui.collapsing("Substream Config", |ui| {
-            ui.add(user_config);
-        });
-
-        ui.separator();
-
-        ui.collapsing("Block Config", |ui| {
-            block_cache.show(ui, api_key, endpoint, stream_sender)
-        });
-    });
-}
-
-pub fn rust_view_ui(ui: &mut egui::Ui, code: &str) {
-    let language = "rs";
-    let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx());
-    egui_extras::syntax_highlighting::code_view_ui(ui, &theme, code, language);
 }
 
 impl eframe::App for EditorState {
@@ -551,6 +477,7 @@ impl eframe::App for EditorState {
         let gui_receiver = gui_receiver.as_mut().unwrap();
         let gui_sender = gui_sender.as_ref().unwrap();
 
+        // In the gui thread, we listen for messages from the other threads
         while let Ok(msg) = gui_receiver.try_recv() {
             match msg {
                 GuiMessage::PushMessage(msg) => {
@@ -563,140 +490,18 @@ impl eframe::App for EditorState {
                     let message = MessageKind::JsonMessage(value);
                     messages.push(message);
                 }
+                GuiMessage::SetBlock(cache_slot, json_str) => {
+                    let value: Value = serde_json::from_str(&json_str).unwrap();
+                    block_cache.set(cache_slot, value.clone());
+
+                    let message = MessageKind::TextMessage(format!("Block {} set", cache_slot));
+                    messages.push(message);
+
+                    let message = MessageKind::JsonMessage(value);
+                    messages.push(message);
+                }
             }
         }
-
-        let mut menu_bar = |ui: &mut Ui, view_config: &mut EditorViews| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("Panels", |ui| {
-                    ui.checkbox(&mut view_config.show_config, "Toggle Config Panel");
-                    ui.checkbox(&mut view_config.show_modules, "Toggle Modules Panel");
-                    ui.checkbox(&mut view_config.show_block_cache, "Toggle Block Cache");
-                    ui.checkbox(&mut view_config.show_messages, "Toggle Messages Panel");
-                    ui.checkbox(
-                        &mut view_config.show_user_config,
-                        "Toggle User Config Panel",
-                    );
-                    ui.checkbox(&mut view_config.show_null_json, "Show Null Json?");
-                    ui.checkbox(&mut view_config.show_full_source, "Show Full Source");
-                });
-
-                ui.menu_button("Run", |ui| {
-                    if ui.button("Run in repl").clicked() {
-                        //let message = WorkerMessage::Eval(source_file);
-                        //worker_sender.send(message).unwrap();
-                    }
-
-                    if ui.button("Run a stream").clicked() {
-                        let message = StreamMessages::Run {
-                            start: editor_config.stream_start_block,
-                            stop: editor_config.stream_stop_block,
-                            api_key: api_key.to_string(),
-                            package_file: editor_config.substream_package.clone(),
-                            endpoint: editor_config.substream_endpoint.clone(),
-                            module_name: editor_config.module_name.clone(),
-                        };
-                        stream_sender.send(message).unwrap()
-                    }
-
-                    if ui.button("Build").clicked() {
-                        let message = WorkerMessage::Build;
-                        worker_sender.send(message).unwrap();
-                    }
-                });
-            });
-
-            if view_config.show_config {
-                Window::new("Config").min_width(250.0).show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.label("Template Repository Path");
-                        ui.text_edit_singleline(template_repo_path);
-                        ui.separator();
-
-                        ui.label("Substreams Endpoint");
-                        ui.text_edit_singleline(&mut editor_config.substream_endpoint);
-                        ui.separator();
-
-                        ui.label("Substreams Package");
-                        ui.text_edit_singleline(&mut editor_config.substream_package);
-                        ui.separator();
-
-                        ui.label("Module Name");
-                        ui.text_edit_singleline(&mut editor_config.module_name);
-                        ui.separator();
-
-                        ui.label("Start Block");
-
-                        let mut start_block = editor_config.stream_start_block.to_string();
-                        ui.text_edit_singleline(&mut start_block);
-                        if let Ok(start_block) = start_block.parse::<i64>() {
-                            editor_config.stream_start_block = start_block;
-                        }
-                        ui.separator();
-
-                        ui.label("Stop Block");
-                        let mut stop_block = editor_config.stream_stop_block.to_string();
-                        ui.text_edit_singleline(&mut stop_block);
-                        if let Ok(stop_block) = stop_block.parse::<u64>() {
-                            editor_config.stream_stop_block = stop_block;
-                        }
-                    })
-                });
-            }
-
-            if view_config.show_full_source {
-                let style = egui::Style::default();
-                Frame::central_panel(&style).show(ui, |ui| {
-                    Window::new("Full Source").show(ctx, |ui| rust_view_ui(ui, &source_file));
-                });
-            }
-        };
-
-        let mut message_panel = |ui: &mut Ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Messages");
-                ui.text_edit_singleline(message_search);
-                ui.horizontal(|ui| {
-                    if ui.button("Clear Messages").clicked() {
-                        gui_sender.send(GuiMessage::ClearMessages).unwrap();
-                    }
-                });
-                ui.separator();
-                ui.vertical(|ui| {
-                    for (i, message) in messages.iter().enumerate() {
-                        match message {
-                            MessageKind::JsonMessage(json) => {
-                                match &json {
-                                    serde_json::Value::Null => continue,
-                                    serde_json::Value::Array(arr) => {
-                                        if arr.is_empty() {
-                                            continue;
-                                        }
-                                    }
-                                    serde_json::Value::Object(obj) => {
-                                        if obj.is_empty() {
-                                            continue;
-                                        }
-                                    }
-                                    _ => {}
-                                };
-
-                                let id = format!("json_message:{}", i);
-                                egui_json_tree::JsonTree::new(id, json)
-                                    .default_expand(egui_json_tree::DefaultExpand::SearchResults(
-                                        message_search,
-                                    ))
-                                    .show(ui);
-                            }
-                            MessageKind::TextMessage(msg) => {
-                                ui.label(msg);
-                            }
-                        }
-                        //ui.label(message);
-                    }
-                });
-            })
-        };
 
         if *display_welcome_message {
             egui::CentralPanel::default()
@@ -739,12 +544,44 @@ impl eframe::App for EditorState {
 
         if view_config.show_messages {
             egui::SidePanel::right("Messages").show(ctx, |ui| {
-                message_panel(ui);
+                panels::message_panel(ui, messages, message_search, gui_sender);
             });
         }
 
+        if view_config.show_config {
+            Window::new("Stream Config")
+                .min_width(250.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label("Template Repository Path");
+                        ui.text_edit_singleline(template_repo_path);
+
+                        ui.separator();
+
+                        ui.label("Start Block");
+                        let mut start_block = editor_config.stream_start_block.to_string();
+                        ui.text_edit_singleline(&mut start_block);
+                        if let Ok(start_block) = start_block.parse::<i64>() {
+                            editor_config.stream_start_block = start_block;
+                        }
+                        ui.separator();
+
+                        ui.label("Stop Block");
+                        let mut stop_block = editor_config.stream_stop_block.to_string();
+                        ui.text_edit_singleline(&mut stop_block);
+                        if let Ok(stop_block) = stop_block.parse::<u64>() {
+                            editor_config.stream_stop_block = stop_block;
+                        }
+                    })
+                });
+        }
+
+        if view_config.show_full_source {
+            panels::rust_view_ui(ctx, &source_file);
+        }
+
         if view_config.show_user_config {
-            user_config_ui(
+            panels::user_config(
                 ctx,
                 &mut self.user_config,
                 block_cache,
@@ -755,9 +592,30 @@ impl eframe::App for EditorState {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            menu_bar(ui, view_config);
+            panels::menu_bar(
+                ui,
+                view_config,
+                editor_config,
+                template_repo_path,
+                &api_key,
+                &source_file,
+                worker_sender,
+                stream_sender,
+            );
             if ui.button("Eval Block for `foo`").clicked() {
                 let block = block_cache.get(1 as u8);
+
+                gui_sender
+                    .send(GuiMessage::PushMessage(
+                        "Evaluating block for `foo`".to_string(),
+                    ))
+                    .unwrap();
+
+                gui_sender
+                    .send(GuiMessage::PushJson(
+                        serde_json::to_string_pretty(block).unwrap(),
+                    ))
+                    .unwrap();
 
                 let fn_name = "foo".to_string();
                 let args = vec![block.clone()];
