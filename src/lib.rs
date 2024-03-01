@@ -1,18 +1,23 @@
 use std::{
     collections::HashMap,
     fs,
-    sync::{mpsc, Arc, Mutex, RwLock},
+    sync::{
+        mpsc::{self, Sender},
+        Arc, Mutex, RwLock,
+    },
     thread,
 };
 
+use block_cache::BlockCache;
 use eframe::{
-    egui::{self, ComboBox, Frame, Key, Ui, Widget, Window},
+    egui::{self, ComboBox, Context, Frame, Key, Ui, Widget, Window},
     run_native, AppCreator, NativeOptions,
 };
 
 use rhai::{eval, Dynamic, Engine, Scope};
 use serde::{Deserialize, Serialize};
 
+pub mod block_cache;
 pub mod modules;
 mod widgets;
 
@@ -39,6 +44,123 @@ pub struct EditorViews {
     show_null_json: bool,
     show_modules: bool,
     show_messages: bool,
+    show_user_config: bool,
+    show_block_cache: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Spkg {
+    pub name: String,
+    pub url: String,
+}
+
+impl Spkg {
+    pub fn uniswap() -> Self {
+        Self {
+            name: "Uniswap v3".to_string(),
+            url: "https://github.com/streamingfast/substreams-uniswap-v3/releases/download/v0.2.8/substreams.spkg".to_string()
+        }
+    }
+
+    pub fn eth_explorer() -> Self {
+        Self {
+            name: "Ethereum Explorer".to_string(),
+            url: "https://spkg.io/streamingfast/ethereum-explorer-v0.1.2.spkg".to_string(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Endpoint {
+    pub name: String,
+    pub url: String,
+}
+
+impl Endpoint {
+    pub fn sf_mainnet() -> Self {
+        Self {
+            name: "Streamingfast Mainnet".to_string(),
+            url: "https://mainnet.eth.streamingfast.io:443".to_string(),
+        }
+    }
+
+    pub fn pinax_mainnet() -> Self {
+        Self {
+            name: "Pinax Mainnet".to_string(),
+            url: "https://eth.substreams.pinax.network:443".to_string(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UserConfig {
+    substream_list: Vec<Spkg>,
+    selected_substream: usize,
+
+    endpoint_list: Vec<Endpoint>,
+    selected_endpoint: usize,
+
+    selected_module: String,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            substream_list: vec![Spkg::uniswap(), Spkg::eth_explorer()],
+            selected_substream: 0,
+            endpoint_list: vec![Endpoint::pinax_mainnet(), Endpoint::sf_mainnet()],
+            selected_endpoint: 0,
+            selected_module: "graph_out".to_string(),
+        }
+    }
+}
+
+impl Widget for &mut UserConfig {
+    fn ui(self, ui: &mut Ui) -> egui::Response {
+        let UserConfig {
+            substream_list,
+            selected_substream,
+            endpoint_list,
+            selected_endpoint,
+            selected_module,
+        } = self;
+
+        ui.vertical(|ui| {
+            ui.heading("User Config");
+            ui.separator();
+            ui.label("Substream");
+            ComboBox::from_label("Substream")
+                .selected_text(&substream_list[*selected_substream].name)
+                .show_ui(ui, |ui| {
+                    for (i, substream) in substream_list.iter().enumerate() {
+                        if ui
+                            .selectable_label(*selected_substream == i, &substream.name)
+                            .clicked()
+                        {
+                            *selected_substream = i;
+                        }
+                    }
+                });
+
+            ui.label("Endpoint");
+            ComboBox::from_label("Endpoint")
+                .selected_text(&endpoint_list[*selected_endpoint].name)
+                .show_ui(ui, |ui| {
+                    for (i, endpoint) in endpoint_list.iter().enumerate() {
+                        if ui
+                            .selectable_label(*selected_endpoint == i, &endpoint.name)
+                            .clicked()
+                        {
+                            *selected_endpoint = i;
+                        }
+                    }
+                });
+
+            ui.label("Module Name");
+            ui.text_edit_singleline(selected_module);
+        })
+        .response
+    }
 }
 
 impl Default for EditorConfig {
@@ -64,6 +186,8 @@ impl Default for EditorViews {
             show_null_json: false,
             show_modules: true,
             show_messages: true,
+            show_user_config: false,
+            show_block_cache: false,
         }
     }
 }
@@ -92,6 +216,13 @@ pub enum StreamMessages {
         endpoint: String,
         module_name: String,
     },
+
+    GetBlock {
+        number: i64,
+        api_key: String,
+        endpoint: String,
+        cache_slot: u8,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -107,6 +238,10 @@ pub struct EditorState {
     template_repo_path: String,
 
     substreams_api_key: String,
+
+    user_config: UserConfig,
+
+    block_cache: BlockCache,
 
     editor_config: EditorConfig,
 
@@ -250,6 +385,37 @@ impl EditorState {
                                     .send(GuiMessage::PushMessage(stop_message))
                                     .unwrap();
                             }
+                            StreamMessages::GetBlock {
+                                number,
+                                api_key,
+                                endpoint,
+                                cache_slot,
+                            } => {
+                                let spkg = Spkg::eth_explorer().url;
+
+                                let stream_config = StreamConfig {
+                                    endpoint_url: endpoint,
+                                    package_file: spkg,
+                                    module_name: "map_block_full".to_string(),
+                                    token: Some(api_key),
+                                    start: number,
+                                    stop: (number + 1) as u64,
+                                };
+
+                                let start_message = format!("Getting block {}", number);
+
+                                if let Ok(rx) = start_stream_channel(stream_config).await {
+                                    gui_sender
+                                        .send(GuiMessage::PushMessage(start_message))
+                                        .unwrap();
+                                    while let Ok(data) = rx.recv() {
+                                        gui_sender.send(GuiMessage::PushJson(data)).unwrap();
+                                    }
+                                } else {
+                                    let message = "Failed to get block".to_string();
+                                    gui_sender.send(GuiMessage::PushMessage(message)).unwrap();
+                                }
+                            }
                         }
                     }
                 }
@@ -272,6 +438,27 @@ impl EditorState {
     }
 }
 
+fn user_config_ui(
+    ctx: &Context,
+    user_config: &mut UserConfig,
+    block_cache: &mut BlockCache,
+    endpoint: &str,
+    api_key: &str,
+    stream_sender: &Sender<StreamMessages>,
+) {
+    Window::new("User Config").min_width(250.0).show(ctx, |ui| {
+        ui.collapsing("Substream Config", |ui| {
+            ui.add(user_config);
+        });
+
+        ui.separator();
+
+        ui.collapsing("Block Config", |ui| {
+            block_cache.show(ui, api_key, endpoint, stream_sender)
+        });
+    });
+}
+
 pub fn rust_view_ui(ui: &mut egui::Ui, code: &str) {
     let language = "rs";
     let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx());
@@ -286,6 +473,9 @@ impl eframe::App for EditorState {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let source_file = self.source_file();
         let api_key = self.substreams_api_key.clone();
+        let endpoint = self.user_config.endpoint_list[self.user_config.selected_endpoint]
+            .url
+            .clone();
 
         let Self {
             template_repo_path,
@@ -299,6 +489,7 @@ impl eframe::App for EditorState {
             gui_sender,
             stream_sender,
             message_search,
+            block_cache,
             ..
         } = self;
 
@@ -327,7 +518,12 @@ impl eframe::App for EditorState {
                 ui.menu_button("Panels", |ui| {
                     ui.checkbox(&mut view_config.show_config, "Toggle Config Panel");
                     ui.checkbox(&mut view_config.show_modules, "Toggle Modules Panel");
+                    ui.checkbox(&mut view_config.show_block_cache, "Toggle Block Cache");
                     ui.checkbox(&mut view_config.show_messages, "Toggle Messages Panel");
+                    ui.checkbox(
+                        &mut view_config.show_user_config,
+                        "Toggle User Config Panel",
+                    );
                     ui.checkbox(&mut view_config.show_null_json, "Show Null Json?");
                     ui.checkbox(&mut view_config.show_full_source, "Show Full Source");
                 });
@@ -482,10 +678,27 @@ impl eframe::App for EditorState {
                 });
         }
 
+        if view_config.show_block_cache {
+            Window::new("Block Cache").show(ctx, |ui| {
+                block_cache.show(ui, &api_key, &endpoint, stream_sender);
+            });
+        }
+
         if view_config.show_messages {
             egui::SidePanel::right("Messages").show(ctx, |ui| {
                 message_panel(ui);
             });
+        }
+
+        if view_config.show_user_config {
+            user_config_ui(
+                ctx,
+                &mut self.user_config,
+                block_cache,
+                &endpoint,
+                &api_key,
+                stream_sender,
+            );
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {

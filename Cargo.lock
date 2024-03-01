@@ -1807,7 +1807,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "http",
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
  "slab",
  "tokio",
  "tokio-util",
@@ -2007,9 +2007,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.2.4"
+version = "2.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "967d6dd42f16dbf0eb8040cb9e477933562684d3918f7d253f2ff9087fb3e7a3"
+checksum = "7b0b929d511467233429c45a44ac1dcaa21ba0f5ba11e4879e6ed28ddb4f9df4"
 dependencies = [
  "equivalent",
  "hashbrown 0.14.3",
@@ -2321,15 +2321,15 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 
 [[package]]
 name = "naga"
-version = "0.19.0"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8878eb410fc90853da3908aebfe61d73d26d4437ef850b70050461f939509899"
+checksum = "50e3524642f53d9af419ab5e8dd29d3ba155708267667c2f3f06c88c9e130843"
 dependencies = [
  "bit-set",
  "bitflags 2.4.2",
  "codespan-reporting",
  "hexf-parse",
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
  "log",
  "num-traits",
  "rustc-hash",
@@ -2683,7 +2683,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1d3afd2628e69da2be385eb6f2fd57c8ac7977ceeff6dc166ff1657b0e386a9"
 dependencies = [
  "fixedbitset",
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
 ]
 
 [[package]]
@@ -2742,7 +2742,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5699cc8a63d1aa2b1ee8e12b9ad70ac790d65788cd36101fa37f87ea46c4cef"
 dependencies = [
  "base64",
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
  "line-wrap",
  "quick-xml",
  "serde",
@@ -3453,7 +3453,7 @@ version = "0.9.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd075d994154d4a774f95b51fb96bdc2832b0ea48425c92546073816cda1f2f"
 dependencies = [
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
  "itoa",
  "ryu",
  "serde",
@@ -3620,7 +3620,7 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 [[package]]
 name = "substreams-sink-rust-lib"
 version = "0.1.0"
-source = "git+https://github.com/MercuricChloride/substreams-sink-rust.git?branch=lib-version#6cd416bbed4b98cf7ca591468ada0dd99ac21aeb"
+source = "git+https://github.com/MercuricChloride/substreams-sink-rust.git?branch=lib-version#4d31de047cbac0371534dc6670d082c74e6cef7f"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3948,7 +3948,7 @@ version = "0.19.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5bb770da30e5cbfde35a2d7b9b8a2c4b8ef89548a7a6aeab5c9a576e3e7421"
 dependencies = [
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
  "toml_datetime",
  "winnow",
 ]
@@ -3959,7 +3959,7 @@ version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a8534fd7f78b5405e860340ad6575217ce99f38d4d5c8f2442cb5ecb50090e1"
 dependencies = [
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
  "toml_datetime",
  "winnow",
 ]
@@ -4449,9 +4449,9 @@ dependencies = [
 
 [[package]]
 name = "wgpu"
-version = "0.19.1"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bfe9a310dcf2e6b85f00c46059aaeaf4184caa8e29a1ecd4b7a704c3482332d"
+checksum = "f9274d073bfb0cad6c53c575d3f4815617c9ccc134cba3ead1fa5fa51e71595c"
 dependencies = [
  "arrayvec",
  "cfg-if",
@@ -4473,16 +4473,16 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core"
-version = "0.19.0"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b15e451d4060ada0d99a64df44e4d590213496da7c4f245572d51071e8e30ed"
+checksum = "0c8bb6a5c62ad78bd683609d525cde6efb6e7cf39e008ea0b8e42518ce18ea81"
 dependencies = [
  "arrayvec",
  "bit-vec",
  "bitflags 2.4.2",
  "cfg_aliases",
  "codespan-reporting",
- "indexmap 2.2.4",
+ "indexmap 2.2.5",
  "log",
  "naga",
  "once_cell",
@@ -4499,9 +4499,9 @@ dependencies = [
 
 [[package]]
 name = "wgpu-hal"
-version = "0.19.1"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3bb47856236bfafc0bc591a925eb036ac19cd987624a447ff353e7a7e7e6f72"
+checksum = "cb7b9a56d44851cc0f51bf2f8b5ed8af5cf6e4bdb178fd5786ea2b4771e2edf0"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -4539,9 +4539,9 @@ dependencies = [
 
 [[package]]
 name = "wgpu-types"
-version = "0.19.0"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "895fcbeb772bfb049eb80b2d6e47f6c9af235284e9703c96fc0218a42ffd5af2"
+checksum = "b671ff9fb03f78b46ff176494ee1ebe7d603393f42664be55b64dc8d53969805"
 dependencies = [
  "bitflags 2.4.2",
  "js-sys",
@@ -5054,9 +5054,9 @@ dependencies = [
 
 [[package]]
 name = "zbus_names"
-version = "2.6.0"
+version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb80bb776dbda6e23d705cf0123c3b95df99c4ebeaec6c2599d4a5419902b4a9"
+checksum = "437d738d3750bed6ca9b8d423ccc7a8eb284f6b1d6d4e225a0e4e6258d864c8d"
 dependencies = [
  "serde",
  "static_assertions",

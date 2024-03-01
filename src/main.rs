@@ -10,7 +10,8 @@ fn main() {
     let api_key = env::var("API_KEY").ok();
 
     let mut native_options = NativeOptions::default();
-    native_options.hardware_acceleration = HardwareAcceleration::Off;
+    //native_options.hardware_acceleration = HardwareAcceleration::Off;
+
     run_native(
         "Substreams Editor",
         native_options,
